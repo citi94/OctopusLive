@@ -1,22 +1,33 @@
 import SwiftUI
 
 struct LiveView: View {
-    @State private var data: WidgetData?
+    @State private var currentWatts: Double = 0
+    @State private var avgWatts: Double = 0
+    @State private var todayKWh: Double = 0
+    @State private var liveReadings: [TelemetryReading] = []
+    @State private var chartReadings: [TelemetryReading] = []
+    @State private var chartRange: ChartRange = .fiveMin
+    @State private var lastUpdate: Date?
     @State private var error: String?
-    @State private var timer: Timer?
+    @State private var rateLimitInfo: String?
+    @State private var requestCount: Int = 0
+    @State private var liveTimer: Timer?
+    @State private var todayTimer: Timer?
+    @State private var liveInterval: TimeInterval = 40
+    private let todayInterval: TimeInterval = 300
 
     var body: some View {
         ZStack {
             Color(red: 0.06, green: 0.06, blue: 0.12)
                 .ignoresSafeArea()
 
-            if let data = data {
+            if lastUpdate != nil {
                 ScrollView {
-                    VStack(spacing: 28) {
-                        demandSection(data)
-                        chartSection(data)
-                        todaySection(data)
-                        updatedLabel(data)
+                    VStack(spacing: 24) {
+                        demandSection
+                        chartSection
+                        todaySection
+                        debugSection
                     }
                     .padding()
                 }
@@ -29,8 +40,8 @@ struct LiveView: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
+                        .padding(.horizontal)
                 }
-                .padding()
             } else {
                 ProgressView("Loading...")
                     .foregroundStyle(.white)
@@ -41,43 +52,48 @@ struct LiveView: View {
         .preferredColorScheme(.dark)
         .onAppear { startPolling() }
         .onDisappear { stopPolling() }
+        .onChange(of: chartRange) {
+            fetchChart()
+        }
     }
 
     // MARK: - Demand
 
-    private func demandSection(_ data: WidgetData) -> some View {
+    private var demandSection: some View {
         VStack(spacing: 8) {
             Text("LIVE")
                 .font(.caption)
                 .fontWeight(.bold)
                 .tracking(3)
-                .foregroundStyle(demandColor(data.currentDemandWatts))
+                .foregroundStyle(demandColor(currentWatts))
 
-            Text(data.currentDemandFormatted)
+            Text(formatWatts(currentWatts))
                 .font(.system(size: 72, weight: .bold, design: .rounded))
-                .foregroundStyle(demandColor(data.currentDemandWatts))
+                .foregroundStyle(demandColor(currentWatts))
                 .contentTransition(.numericText())
-                .animation(.easeInOut(duration: 0.3), value: data.currentDemandWatts)
+                .animation(.easeInOut(duration: 0.3), value: currentWatts)
 
-            HStack(spacing: 16) {
-                Label("5m avg \(data.averageDemandFormatted)", systemImage: "chart.line.flattrend.xyaxis")
-            }
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
+            Label("5m avg \(formatWatts(avgWatts))", systemImage: "chart.line.flattrend.xyaxis")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
         }
         .padding(.top, 12)
     }
 
     // MARK: - Chart
 
-    private func chartSection(_ data: WidgetData) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Recent demand")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+    private var chartSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Picker("Range", selection: $chartRange) {
+                ForEach(ChartRange.allCases) { range in
+                    Text(range.rawValue).tag(range)
+                }
+            }
+            .pickerStyle(.segmented)
 
-            DemandChart(readings: data.readings)
-                .frame(height: 140)
+            let readings = chartRange == .fiveMin ? liveReadings : chartReadings
+            DemandChart(readings: readings)
+                .frame(height: 180)
         }
         .padding()
         .background(Color.white.opacity(0.05))
@@ -86,84 +102,134 @@ struct LiveView: View {
 
     // MARK: - Today
 
-    private func todaySection(_ data: WidgetData) -> some View {
-        HStack(spacing: 0) {
-            VStack(spacing: 4) {
-                Text(data.todayKWhFormatted)
-                    .font(.title2.bold())
-                    .foregroundStyle(.white)
-                Text("used today")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity)
-
-            Divider()
-                .frame(height: 40)
-                .background(Color.white.opacity(0.1))
-
-            VStack(spacing: 4) {
-                Text(data.todayCostFormatted)
-                    .font(.title2.bold())
-                    .foregroundStyle(.white)
-                Text("est. cost")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity)
+    private var todaySection: some View {
+        VStack(spacing: 4) {
+            Text(String(format: "%.1f kWh", todayKWh))
+                .font(.title2.bold())
+                .foregroundStyle(.white)
+            Text("used today")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
+        .frame(maxWidth: .infinity)
         .padding()
         .background(Color.white.opacity(0.05))
         .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 
-    // MARK: - Updated
+    // MARK: - Debug / Rate Info
 
-    private func updatedLabel(_ data: WidgetData) -> some View {
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm:ss"
-        return Text("Updated \(f.string(from: data.timestamp))")
-            .font(.caption2)
-            .foregroundStyle(.secondary.opacity(0.6))
-    }
-
-    // MARK: - Helpers
-
-    private func demandColor(_ watts: Double) -> Color {
-        switch watts {
-        case ..<500: return .green
-        case ..<1500: return Color(red: 0.3, green: 0.69, blue: 0.31)
-        case ..<3000: return .orange
-        default: return .red
+    private var debugSection: some View {
+        VStack(spacing: 4) {
+            if let lastUpdate {
+                let f = DateFormatter()
+                let _ = f.dateFormat = "HH:mm:ss"
+                Text("Updated \(f.string(from: lastUpdate)) | \(requestCount) requests this session")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary.opacity(0.6))
+            }
+            Text("Polling every \(Int(liveInterval))s")
+                .font(.caption2)
+                .foregroundStyle(.secondary.opacity(0.4))
+            if let rateLimitInfo {
+                Text(rateLimitInfo)
+                    .font(.caption2)
+                    .foregroundStyle(.orange.opacity(0.6))
+            }
         }
     }
 
     // MARK: - Polling
 
     private func startPolling() {
-        fetchData()
-        timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { _ in
-            fetchData()
+        fetchLive()
+        fetchToday()
+        liveTimer = Timer.scheduledTimer(withTimeInterval: liveInterval, repeats: true) { _ in
+            fetchLive()
+        }
+        todayTimer = Timer.scheduledTimer(withTimeInterval: todayInterval, repeats: true) { _ in
+            fetchToday()
         }
     }
 
     private func stopPolling() {
-        timer?.invalidate()
-        timer = nil
+        liveTimer?.invalidate()
+        liveTimer = nil
+        todayTimer?.invalidate()
+        todayTimer = nil
     }
 
-    private func fetchData() {
+    private func fetchLive() {
         Task {
             do {
-                let result = try await OctopusAPI.shared.fetchWidgetData()
+                let result = try await OctopusAPI.shared.fetchLiveDemand()
+                let rateInfo = await OctopusAPI.shared.lastRateLimitInfo
                 await MainActor.run {
-                    self.data = result
+                    self.currentWatts = result.current
+                    self.avgWatts = result.avg
+                    self.liveReadings = result.readings
+                    self.lastUpdate = Date()
                     self.error = nil
+                    self.requestCount += 1
+                    if let info = rateInfo {
+                        self.rateLimitInfo = info.headers.map { "\($0.key): \($0.value)" }.joined(separator: " | ")
+                    }
+                    // Succeeded - if we were backed off, gradually recover
+                    if liveInterval > 40 {
+                        adjustPolling(interval: max(40, liveInterval - 10))
+                    }
+                }
+            } catch let apiError as OctopusAPI.APIError {
+                await MainActor.run {
+                    if case .rateLimited = apiError {
+                        self.rateLimitInfo = "Rate limited - backing off to \(Int(liveInterval + 30))s"
+                        adjustPolling(interval: min(120, liveInterval + 30))
+                    } else {
+                        self.error = apiError.localizedDescription
+                    }
                 }
             } catch {
                 await MainActor.run {
                     self.error = error.localizedDescription
                 }
+            }
+        }
+    }
+
+    private func adjustPolling(interval: TimeInterval) {
+        guard interval != liveInterval else { return }
+        liveInterval = interval
+        liveTimer?.invalidate()
+        liveTimer = Timer.scheduledTimer(withTimeInterval: liveInterval, repeats: true) { _ in
+            fetchLive()
+        }
+    }
+
+    private func fetchToday() {
+        Task {
+            do {
+                let kwh = try await OctopusAPI.shared.fetchTodayKWh()
+                await MainActor.run {
+                    self.todayKWh = kwh
+                    self.requestCount += 1
+                }
+            } catch {
+                // Non-critical, don't overwrite main error
+            }
+        }
+    }
+
+    private func fetchChart() {
+        guard chartRange != .fiveMin else { return }
+        Task {
+            do {
+                let readings = try await OctopusAPI.shared.fetchChartData(range: chartRange)
+                await MainActor.run {
+                    self.chartReadings = readings
+                    self.requestCount += 1
+                }
+            } catch {
+                // Non-critical
             }
         }
     }
@@ -175,54 +241,79 @@ struct DemandChart: View {
     let readings: [TelemetryReading]
 
     var body: some View {
-        let points = Array(readings.suffix(30))
-        let demands = points.map(\.demandWatts)
-        let maxD = demands.max() ?? 1
+        let demands = readings.map(\.demandWatts)
+        let maxD = demands.max() ?? 0
         let minD = demands.min() ?? 0
-        let range = max(maxD - minD, 1)
+        let rawRange = maxD - minD
+        let scaleMin = max(0, minD - rawRange * 0.1)
+        let scaleMax = maxD + rawRange * 0.1
+        let range = max(scaleMax - scaleMin, 100)
 
-        if points.count > 1 {
-            GeometryReader { geo in
-                let w = geo.size.width
-                let h = geo.size.height
-                let stepX = w / CGFloat(points.count - 1)
-
-                // Line
-                Path { path in
-                    for (i, r) in points.enumerated() {
-                        let x = CGFloat(i) * stepX
-                        let y = h - ((CGFloat(r.demandWatts - minD) / CGFloat(range)) * h)
-                        if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
-                        else { path.addLine(to: CGPoint(x: x, y: y)) }
+        if readings.count > 1 {
+            VStack(spacing: 0) {
+                HStack(alignment: .top, spacing: 4) {
+                    VStack {
+                        Text(formatWatts(scaleMax))
+                        Spacer()
+                        Text(formatWatts((scaleMax + scaleMin) / 2))
+                        Spacer()
+                        Text(formatWatts(scaleMin))
                     }
-                }
-                .stroke(
-                    LinearGradient(colors: [.green, .yellow, .orange, .red], startPoint: .bottom, endPoint: .top),
-                    style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round)
-                )
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.secondary.opacity(0.6))
+                    .frame(width: 52, alignment: .trailing)
 
-                // Fill
-                Path { path in
-                    for (i, r) in points.enumerated() {
-                        let x = CGFloat(i) * stepX
-                        let y = h - ((CGFloat(r.demandWatts - minD) / CGFloat(range)) * h)
-                        if i == 0 {
-                            path.move(to: CGPoint(x: x, y: h))
-                            path.addLine(to: CGPoint(x: x, y: y))
-                        } else {
-                            path.addLine(to: CGPoint(x: x, y: y))
+                    GeometryReader { geo in
+                        let w = geo.size.width
+                        let h = geo.size.height
+                        let stepX = w / CGFloat(readings.count - 1)
+
+                        ForEach(0..<3) { i in
+                            let y = h * CGFloat(i) / 2.0
+                            Path { path in
+                                path.move(to: CGPoint(x: 0, y: y))
+                                path.addLine(to: CGPoint(x: w, y: y))
+                            }
+                            .stroke(Color.white.opacity(0.06), lineWidth: 0.5)
                         }
+
+                        Path { path in
+                            for (i, r) in readings.enumerated() {
+                                let x = CGFloat(i) * stepX
+                                let y = h - ((CGFloat(r.demandWatts - scaleMin) / CGFloat(range)) * h)
+                                if i == 0 {
+                                    path.move(to: CGPoint(x: x, y: h))
+                                    path.addLine(to: CGPoint(x: x, y: y))
+                                } else {
+                                    path.addLine(to: CGPoint(x: x, y: y))
+                                }
+                            }
+                            path.addLine(to: CGPoint(x: CGFloat(readings.count - 1) * stepX, y: h))
+                            path.closeSubpath()
+                        }
+                        .fill(
+                            LinearGradient(
+                                colors: [Color.orange.opacity(0.2), Color.orange.opacity(0.0)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+
+                        Path { path in
+                            for (i, r) in readings.enumerated() {
+                                let x = CGFloat(i) * stepX
+                                let y = h - ((CGFloat(r.demandWatts - scaleMin) / CGFloat(range)) * h)
+                                if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
+                                else { path.addLine(to: CGPoint(x: x, y: y)) }
+                            }
+                        }
+                        .stroke(
+                            LinearGradient(colors: [.green, .yellow, .orange, .red], startPoint: .bottom, endPoint: .top),
+                            style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round)
+                        )
                     }
-                    path.addLine(to: CGPoint(x: CGFloat(points.count - 1) * stepX, y: h))
-                    path.closeSubpath()
                 }
-                .fill(
-                    LinearGradient(
-                        colors: [Color.orange.opacity(0.25), Color.orange.opacity(0.0)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
+                .frame(height: 140)
             }
         } else {
             Text("Waiting for data...")
@@ -230,6 +321,17 @@ struct DemandChart: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+}
+
+// MARK: - Helpers
+
+private func demandColor(_ watts: Double) -> Color {
+    switch watts {
+    case ..<500: return .green
+    case ..<1500: return Color(red: 0.3, green: 0.69, blue: 0.31)
+    case ..<3000: return .orange
+    default: return .red
     }
 }
 

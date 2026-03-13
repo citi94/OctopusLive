@@ -18,7 +18,6 @@ struct OctopusTimelineProvider: TimelineProvider {
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<OctopusEntry>) -> Void) {
         fetchEntry { entry in
-            // Request next refresh in 5 minutes
             let nextUpdate = Calendar.current.date(byAdding: .minute, value: 5, to: Date())!
             let timeline = Timeline(entries: [entry], policy: .after(nextUpdate))
             completion(timeline)
@@ -33,7 +32,7 @@ struct OctopusTimelineProvider: TimelineProvider {
 
         Task {
             do {
-                let data = try await OctopusAPI.shared.fetchWidgetData()
+                let data = try await OctopusAPI.shared.fetchAll()
                 completion(OctopusEntry(date: Date(), data: data, error: nil))
             } catch {
                 completion(OctopusEntry(date: Date(), data: nil, error: error.localizedDescription))
@@ -46,50 +45,73 @@ struct OctopusTimelineProvider: TimelineProvider {
 
 struct OctopusEntry: TimelineEntry {
     let date: Date
-    let data: WidgetData?
+    let data: LiveData?
     let error: String?
 }
 
-// MARK: - Widget Views
+// MARK: - Widget Helpers
+
+func widgetDemandColor(_ watts: Double) -> Color {
+    switch watts {
+    case ..<500: return .green
+    case ..<1500: return Color(red: 0.3, green: 0.69, blue: 0.31)
+    case ..<3000: return .orange
+    default: return .red
+    }
+}
+
+func widgetTimeString(_ date: Date) -> String {
+    let f = DateFormatter()
+    f.dateFormat = "HH:mm"
+    return f.string(from: date)
+}
+
+// MARK: - Small Widget
 
 struct OctopusWidgetSmallView: View {
     let entry: OctopusEntry
 
     var body: some View {
         if let data = entry.data {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text("LIVE")
                         .font(.system(size: 10, weight: .bold))
                         .tracking(2)
-                        .foregroundStyle(demandColor(data.currentDemandWatts))
+                        .foregroundStyle(widgetDemandColor(data.currentDemandWatts))
                     Spacer()
-                    Image(systemName: "bolt.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.yellow.opacity(0.6))
+                    // Interactive refresh button
+                    Button(intent: RefreshEnergyIntent()) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
                 }
 
                 Spacer()
 
-                Text(data.currentDemandFormatted)
+                Text(formatWatts(data.currentDemandWatts))
                     .font(.system(size: 32, weight: .bold, design: .rounded))
-                    .foregroundStyle(demandColor(data.currentDemandWatts))
-                    .minimumScaleFactor(0.6)
+                    .foregroundStyle(widgetDemandColor(data.currentDemandWatts))
+                    .minimumScaleFactor(0.5)
                     .lineLimit(1)
 
-                Text("avg \(data.averageDemandFormatted)")
+                Text("avg \(formatWatts(data.averageDemandWatts))")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
 
                 Spacer()
 
                 HStack {
-                    Text(data.todayKWhFormatted)
+                    Text(String(format: "%.1f kWh today", data.todayKWh))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
                     Spacer()
-                    Text(data.todayCostFormatted)
+                    Text(widgetTimeString(data.timestamp))
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary.opacity(0.6))
                 }
-                .font(.system(size: 11, weight: .medium, design: .rounded))
-                .foregroundStyle(.secondary)
             }
             .containerBackground(for: .widget) {
                 Color(red: 0.06, green: 0.06, blue: 0.12)
@@ -99,6 +121,8 @@ struct OctopusWidgetSmallView: View {
         }
     }
 }
+
+// MARK: - Medium Widget
 
 struct OctopusWidgetMediumView: View {
     let entry: OctopusEntry
@@ -112,21 +136,25 @@ struct OctopusWidgetMediumView: View {
                         Text("LIVE")
                             .font(.system(size: 10, weight: .bold))
                             .tracking(2)
-                            .foregroundStyle(demandColor(data.currentDemandWatts))
-                        Image(systemName: "bolt.fill")
-                            .font(.system(size: 8))
-                            .foregroundStyle(.yellow.opacity(0.6))
+                            .foregroundStyle(widgetDemandColor(data.currentDemandWatts))
+                        Spacer()
+                        Button(intent: RefreshEnergyIntent()) {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
                     }
 
                     Spacer()
 
-                    Text(data.currentDemandFormatted)
+                    Text(formatWatts(data.currentDemandWatts))
                         .font(.system(size: 36, weight: .bold, design: .rounded))
-                        .foregroundStyle(demandColor(data.currentDemandWatts))
-                        .minimumScaleFactor(0.6)
+                        .foregroundStyle(widgetDemandColor(data.currentDemandWatts))
+                        .minimumScaleFactor(0.5)
                         .lineLimit(1)
 
-                    Text("5m avg \(data.averageDemandFormatted)")
+                    Text("5m avg \(formatWatts(data.averageDemandWatts))")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
 
@@ -136,7 +164,7 @@ struct OctopusWidgetMediumView: View {
                 Divider()
                     .background(Color.white.opacity(0.1))
 
-                // Right: today stats
+                // Right: today + time
                 VStack(alignment: .leading, spacing: 12) {
                     Spacer()
 
@@ -145,24 +173,14 @@ struct OctopusWidgetMediumView: View {
                             .font(.system(size: 9, weight: .bold))
                             .tracking(1.5)
                             .foregroundStyle(.secondary)
-                        Text(data.todayKWhFormatted)
-                            .font(.system(size: 22, weight: .bold, design: .rounded))
-                            .foregroundStyle(.white)
-                    }
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("EST. COST")
-                            .font(.system(size: 9, weight: .bold))
-                            .tracking(1.5)
-                            .foregroundStyle(.secondary)
-                        Text(data.todayCostFormatted)
+                        Text(String(format: "%.1f kWh", data.todayKWh))
                             .font(.system(size: 22, weight: .bold, design: .rounded))
                             .foregroundStyle(.white)
                     }
 
                     Spacer()
 
-                    Text(timeString(data.timestamp))
+                    Text(widgetTimeString(data.timestamp))
                         .font(.system(size: 9))
                         .foregroundStyle(.secondary.opacity(0.6))
                 }
@@ -178,25 +196,200 @@ struct OctopusWidgetMediumView: View {
     }
 }
 
-// MARK: - Shared Helpers
+// MARK: - Large Widget
 
-private func demandColor(_ watts: Double) -> Color {
-    switch watts {
-    case ..<500: return .green
-    case ..<1500: return Color(red: 0.3, green: 0.69, blue: 0.31)
-    case ..<3000: return .orange
-    default: return .red
+struct OctopusWidgetLargeView: View {
+    let entry: OctopusEntry
+
+    var body: some View {
+        if let data = entry.data {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("LIVE")
+                        .font(.system(size: 10, weight: .bold))
+                        .tracking(2)
+                        .foregroundStyle(widgetDemandColor(data.currentDemandWatts))
+                    Spacer()
+                    Button(intent: RefreshEnergyIntent()) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Text(formatWatts(data.currentDemandWatts))
+                    .font(.system(size: 48, weight: .bold, design: .rounded))
+                    .foregroundStyle(widgetDemandColor(data.currentDemandWatts))
+                    .minimumScaleFactor(0.5)
+
+                Text("5m avg \(formatWatts(data.averageDemandWatts))")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+
+                // Mini spark chart from recent readings
+                if data.readings.count > 1 {
+                    miniChart(data.readings)
+                }
+
+                Spacer()
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("TODAY")
+                            .font(.system(size: 9, weight: .bold))
+                            .tracking(1.5)
+                            .foregroundStyle(.secondary)
+                        Text(String(format: "%.1f kWh", data.todayKWh))
+                            .font(.system(size: 20, weight: .bold, design: .rounded))
+                            .foregroundStyle(.white)
+                    }
+                    Spacer()
+                    Text(widgetTimeString(data.timestamp))
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary.opacity(0.6))
+                }
+            }
+            .containerBackground(for: .widget) {
+                Color(red: 0.06, green: 0.06, blue: 0.12)
+            }
+        } else {
+            notConfiguredView(error: entry.error)
+        }
+    }
+
+    private func miniChart(_ readings: [TelemetryReading]) -> some View {
+        let demands = readings.map(\.demandWatts)
+        let maxD = demands.max() ?? 1
+        let minD = demands.min() ?? 0
+        let range = max(maxD - minD, 100)
+
+        return GeometryReader { geo in
+            let w = geo.size.width
+            let h = geo.size.height
+            let stepX = w / CGFloat(readings.count - 1)
+
+            Path { path in
+                for (i, r) in readings.enumerated() {
+                    let x = CGFloat(i) * stepX
+                    let y = h - ((CGFloat(r.demandWatts - minD) / CGFloat(range)) * h)
+                    if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
+                    else { path.addLine(to: CGPoint(x: x, y: y)) }
+                }
+            }
+            .stroke(
+                LinearGradient(colors: [.green, .yellow, .orange, .red], startPoint: .bottom, endPoint: .top),
+                style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round)
+            )
+
+            Path { path in
+                for (i, r) in readings.enumerated() {
+                    let x = CGFloat(i) * stepX
+                    let y = h - ((CGFloat(r.demandWatts - minD) / CGFloat(range)) * h)
+                    if i == 0 {
+                        path.move(to: CGPoint(x: x, y: h))
+                        path.addLine(to: CGPoint(x: x, y: y))
+                    } else {
+                        path.addLine(to: CGPoint(x: x, y: y))
+                    }
+                }
+                path.addLine(to: CGPoint(x: CGFloat(readings.count - 1) * stepX, y: h))
+                path.closeSubpath()
+            }
+            .fill(
+                LinearGradient(
+                    colors: [Color.orange.opacity(0.2), Color.orange.opacity(0.0)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+        }
+        .frame(height: 80)
     }
 }
 
-private func timeString(_ date: Date) -> String {
-    let f = DateFormatter()
-    f.dateFormat = "HH:mm"
-    return "Updated \(f.string(from: date))"
+// MARK: - Lock Screen: Circular
+
+struct OctopusAccessoryCircularView: View {
+    let entry: OctopusEntry
+
+    var body: some View {
+        if let data = entry.data {
+            Gauge(value: min(data.currentDemandWatts, 10000), in: 0...10000) {
+                Image(systemName: "bolt.fill")
+            } currentValueLabel: {
+                Text(compactWatts(data.currentDemandWatts))
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
+            }
+            .gaugeStyle(.accessoryCircular)
+        } else {
+            Image(systemName: "bolt.slash")
+        }
+    }
+
+    private func compactWatts(_ w: Double) -> String {
+        if w >= 1000 {
+            return String(format: "%.1fk", w / 1000)
+        }
+        return "\(Int(w))"
+    }
 }
 
+// MARK: - Lock Screen: Rectangular
+
+struct OctopusAccessoryRectangularView: View {
+    let entry: OctopusEntry
+
+    var body: some View {
+        if let data = entry.data {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Image(systemName: "bolt.fill")
+                        .font(.system(size: 9))
+                    Text("LIVE")
+                        .font(.system(size: 9, weight: .bold))
+                        .tracking(1)
+                }
+
+                Text(formatWatts(data.currentDemandWatts))
+                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                    .minimumScaleFactor(0.6)
+
+                Text("avg \(formatWatts(data.averageDemandWatts))")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+        } else {
+            VStack(alignment: .leading) {
+                HStack(spacing: 4) {
+                    Image(systemName: "bolt.slash")
+                        .font(.system(size: 9))
+                    Text("Not configured")
+                        .font(.system(size: 10))
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Lock Screen: Inline
+
+struct OctopusAccessoryInlineView: View {
+    let entry: OctopusEntry
+
+    var body: some View {
+        if let data = entry.data {
+            Label(formatWatts(data.currentDemandWatts), systemImage: "bolt.fill")
+        } else {
+            Label("--", systemImage: "bolt.slash")
+        }
+    }
+}
+
+// MARK: - Not Configured
+
 @ViewBuilder
-private func notConfiguredView(error: String?) -> some View {
+func notConfiguredView(error: String?) -> some View {
     VStack(spacing: 8) {
         Image(systemName: "bolt.slash.fill")
             .font(.title2)
@@ -211,7 +404,7 @@ private func notConfiguredView(error: String?) -> some View {
     }
 }
 
-// MARK: - Widget Definition
+// MARK: - Entry View Router
 
 struct OctopusWidgetEntryView: View {
     @Environment(\.widgetFamily) var family
@@ -221,11 +414,23 @@ struct OctopusWidgetEntryView: View {
         switch family {
         case .systemSmall:
             OctopusWidgetSmallView(entry: entry)
-        default:
+        case .systemMedium:
             OctopusWidgetMediumView(entry: entry)
+        case .systemLarge:
+            OctopusWidgetLargeView(entry: entry)
+        case .accessoryCircular:
+            OctopusAccessoryCircularView(entry: entry)
+        case .accessoryRectangular:
+            OctopusAccessoryRectangularView(entry: entry)
+        case .accessoryInline:
+            OctopusAccessoryInlineView(entry: entry)
+        default:
+            OctopusWidgetSmallView(entry: entry)
         }
     }
 }
+
+// MARK: - Widget Definition
 
 struct OctopusWidget: Widget {
     let kind = "OctopusWidget"
@@ -236,7 +441,14 @@ struct OctopusWidget: Widget {
         }
         .configurationDisplayName("Octopus Live")
         .description("Live electricity usage from your Octopus Home Mini")
-        .supportedFamilies([.systemSmall, .systemMedium])
+        .supportedFamilies([
+            .systemSmall,
+            .systemMedium,
+            .systemLarge,
+            .accessoryCircular,
+            .accessoryRectangular,
+            .accessoryInline,
+        ])
     }
 }
 
@@ -249,6 +461,24 @@ struct OctopusWidget: Widget {
 }
 
 #Preview("Medium", as: .systemMedium) {
+    OctopusWidget()
+} timeline: {
+    OctopusEntry(date: Date(), data: .placeholder, error: nil)
+}
+
+#Preview("Large", as: .systemLarge) {
+    OctopusWidget()
+} timeline: {
+    OctopusEntry(date: Date(), data: .placeholder, error: nil)
+}
+
+#Preview("Lock Circular", as: .accessoryCircular) {
+    OctopusWidget()
+} timeline: {
+    OctopusEntry(date: Date(), data: .placeholder, error: nil)
+}
+
+#Preview("Lock Rectangular", as: .accessoryRectangular) {
     OctopusWidget()
 } timeline: {
     OctopusEntry(date: Date(), data: .placeholder, error: nil)

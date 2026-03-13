@@ -5,12 +5,16 @@ actor OctopusAPI {
 
     private let graphqlURL = URL(string: "https://api.octopus.energy/v1/graphql/")!
 
-    // Tariff rates (pence) — Silver fixed
-    private let unitRatePence: Double = 24.5
-    private let standingChargePence: Double = 46.36
-
     private var cachedToken: String?
     private var tokenExpiry: Date?
+
+    // Rate limit tracking
+    private(set) var lastRateLimitInfo: RateLimitInfo?
+
+    struct RateLimitInfo {
+        let headers: [String: String]
+        let timestamp: Date
+    }
 
     // MARK: - Auth
 
@@ -44,7 +48,6 @@ actor OctopusAPI {
     // MARK: - Account Discovery
 
     func discoverDevice(apiKey: String, accountNumber: String) async throws -> (deviceId: String, mpan: String, serial: String) {
-        // Get a token with the provided key
         let tokenQuery = """
         mutation { obtainKrakenToken(input: { APIKey: "\(apiKey)" }) { token } }
         """
@@ -94,52 +97,149 @@ actor OctopusAPI {
         throw APIError.noSmartDevice
     }
 
-    // MARK: - Telemetry
+    // MARK: - Live Demand (lightweight, called frequently)
 
-    func fetchWidgetData() async throws -> WidgetData {
+    func fetchLiveDemand() async throws -> (current: Double, avg: Double, readings: [TelemetryReading]) {
         guard SharedConfig.isConfigured else { throw APIError.notConfigured }
 
         let token = try await getToken()
         let deviceId = SharedConfig.deviceId
 
-        // Fetch last 5 mins of live data
         let now = Date()
-        let fiveMinAgo = now.addingTimeInterval(-5 * 60)
-        let startOfDay = Calendar.current.startOfDay(for: now)
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime]
 
-        let isoNow = ISO8601DateFormatter().string(from: now)
-        let isoFiveMin = ISO8601DateFormatter().string(from: fiveMinAgo)
-        let isoStartOfDay = ISO8601DateFormatter().string(from: startOfDay)
-
-        let liveQuery = """
+        let query = """
         {
             smartMeterTelemetry(
+                deviceId: "\(deviceId)",
+                grouping: TEN_SECONDS,
+                start: "\(fmt.string(from: now.addingTimeInterval(-5 * 60)))",
+                end: "\(fmt.string(from: now))"
+            ) { readAt consumptionDelta demand }
+        }
+        """
+
+        let response: GraphQLResponse<TelemetryResponse> = try await execute(query: query, token: token)
+        let readings = response.data?.smartMeterTelemetry ?? []
+
+        let current = readings.last?.demandWatts ?? 0
+        let avg = readings.isEmpty ? 0 :
+            readings.reduce(0.0) { $0 + $1.demandWatts } / Double(readings.count)
+
+        return (current: current, avg: avg, readings: readings)
+    }
+
+    // MARK: - Today Usage (called infrequently)
+
+    func fetchTodayKWh() async throws -> Double {
+        guard SharedConfig.isConfigured else { throw APIError.notConfigured }
+
+        let token = try await getToken()
+        let deviceId = SharedConfig.deviceId
+
+        let now = Date()
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime]
+
+        let query = """
+        {
+            smartMeterTelemetry(
+                deviceId: "\(deviceId)",
+                grouping: HALF_HOURLY,
+                start: "\(fmt.string(from: Calendar.current.startOfDay(for: now)))",
+                end: "\(fmt.string(from: now))"
+            ) { readAt consumptionDelta demand }
+        }
+        """
+
+        let response: GraphQLResponse<TelemetryResponse> = try await execute(query: query, token: token)
+        let readings = response.data?.smartMeterTelemetry ?? []
+        let totalWh = readings.reduce(0.0) { $0 + $1.consumptionWh }
+        return totalWh / 1000
+    }
+
+    // MARK: - Chart Data (called on range change)
+
+    func fetchChartData(range: ChartRange) async throws -> [TelemetryReading] {
+        guard SharedConfig.isConfigured else { throw APIError.notConfigured }
+
+        let token = try await getToken()
+        let deviceId = SharedConfig.deviceId
+
+        let now = Date()
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime]
+
+        let query = """
+        {
+            smartMeterTelemetry(
+                deviceId: "\(deviceId)",
+                grouping: \(range.grouping),
+                start: "\(fmt.string(from: now.addingTimeInterval(-range.seconds)))",
+                end: "\(fmt.string(from: now))"
+            ) { readAt consumptionDelta demand }
+        }
+        """
+
+        let response: GraphQLResponse<TelemetryResponse> = try await execute(query: query, token: token)
+        return response.data?.smartMeterTelemetry ?? []
+    }
+
+    // MARK: - Combined fetch for widget (single request, aliases)
+
+    func fetchAll(chartRange: ChartRange = .fiveMin) async throws -> LiveData {
+        guard SharedConfig.isConfigured else { throw APIError.notConfigured }
+
+        let token = try await getToken()
+        let deviceId = SharedConfig.deviceId
+
+        let now = Date()
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime]
+
+        let isoNow = fmt.string(from: now)
+        let isoFiveMin = fmt.string(from: now.addingTimeInterval(-5 * 60))
+        let isoStartOfDay = fmt.string(from: Calendar.current.startOfDay(for: now))
+
+        let chartAlias: String
+        if chartRange == .fiveMin {
+            chartAlias = ""
+        } else {
+            let isoChartStart = fmt.string(from: now.addingTimeInterval(-chartRange.seconds))
+            chartAlias = """
+                chart: smartMeterTelemetry(
+                    deviceId: "\(deviceId)",
+                    grouping: \(chartRange.grouping),
+                    start: "\(isoChartStart)",
+                    end: "\(isoNow)"
+                ) { readAt consumptionDelta demand }
+            """
+        }
+
+        let query = """
+        {
+            live: smartMeterTelemetry(
                 deviceId: "\(deviceId)",
                 grouping: TEN_SECONDS,
                 start: "\(isoFiveMin)",
                 end: "\(isoNow)"
             ) { readAt consumptionDelta demand }
-        }
-        """
-
-        let todayQuery = """
-        {
-            smartMeterTelemetry(
+            today: smartMeterTelemetry(
                 deviceId: "\(deviceId)",
-                grouping: HALF_HOUR,
+                grouping: HALF_HOURLY,
                 start: "\(isoStartOfDay)",
                 end: "\(isoNow)"
             ) { readAt consumptionDelta demand }
+            \(chartAlias)
         }
         """
 
-        async let liveResponse: GraphQLResponse<TelemetryResponse> = execute(query: liveQuery, token: token)
-        async let todayResponse: GraphQLResponse<TelemetryResponse> = execute(query: todayQuery, token: token)
+        let response: GraphQLResponse<CombinedTelemetryResponse> = try await execute(query: query, token: token)
 
-        let (live, today) = try await (liveResponse, todayResponse)
-
-        let liveReadings = live.data?.smartMeterTelemetry ?? []
-        let todayReadings = today.data?.smartMeterTelemetry ?? []
+        let liveReadings = response.data?.live ?? []
+        let todayReadings = response.data?.today ?? []
+        let chartReadings = response.data?.chart ?? liveReadings
 
         let currentDemand = liveReadings.last?.demandWatts ?? 0
         let avgDemand = liveReadings.isEmpty ? 0 :
@@ -147,15 +247,13 @@ actor OctopusAPI {
 
         let totalWh = todayReadings.reduce(0.0) { $0 + $1.consumptionWh }
         let totalKwh = totalWh / 1000
-        let costPence = totalKwh * unitRatePence + standingChargePence
-        let costPounds = costPence / 100
 
-        return WidgetData(
+        return LiveData(
             currentDemandWatts: currentDemand,
             averageDemandWatts: avgDemand,
             todayKWh: totalKwh,
-            todayCostPounds: costPounds,
             readings: liveReadings,
+            chartReadings: chartReadings,
             timestamp: now
         )
     }
@@ -175,11 +273,45 @@ actor OctopusAPI {
 
         let (data, response) = try await URLSession.shared.data(for: request)
 
-        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-            throw APIError.httpError
+        guard let http = response as? HTTPURLResponse else {
+            throw APIError.networkError("No HTTP response")
         }
 
-        return try JSONDecoder().decode(GraphQLResponse<T>.self, from: data)
+        // Capture rate limit headers
+        var rateLimitHeaders: [String: String] = [:]
+        for (key, value) in http.allHeaderFields {
+            let k = "\(key)".lowercased()
+            if k.contains("rate") || k.contains("limit") || k.contains("retry") || k.contains("throttle") {
+                rateLimitHeaders["\(key)"] = "\(value)"
+            }
+        }
+        if !rateLimitHeaders.isEmpty || http.statusCode == 429 {
+            lastRateLimitInfo = RateLimitInfo(headers: rateLimitHeaders, timestamp: Date())
+        }
+
+        guard http.statusCode != 429 else {
+            let retryAfter = http.value(forHTTPHeaderField: "Retry-After") ?? "unknown"
+            throw APIError.rateLimited(retryAfter: retryAfter)
+        }
+
+        guard (200...299).contains(http.statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? "no body"
+            throw APIError.networkError("HTTP \(http.statusCode): \(body.prefix(200))")
+        }
+
+        let decoded: GraphQLResponse<T>
+        do {
+            decoded = try JSONDecoder().decode(GraphQLResponse<T>.self, from: data)
+        } catch {
+            let body = String(data: data, encoding: .utf8) ?? "no body"
+            throw APIError.networkError("Decode error: \(error.localizedDescription)\n\(body.prefix(300))")
+        }
+
+        if let errors = decoded.errors, let first = errors.first {
+            throw APIError.networkError("API: \(first.message)")
+        }
+
+        return decoded
     }
 
     // MARK: - Errors
@@ -187,7 +319,8 @@ actor OctopusAPI {
     enum APIError: LocalizedError {
         case notConfigured
         case authFailed
-        case httpError
+        case networkError(String)
+        case rateLimited(retryAfter: String)
         case accountNotFound
         case noSmartDevice
 
@@ -195,7 +328,8 @@ actor OctopusAPI {
             switch self {
             case .notConfigured: return "Please enter your API key and account number in the app"
             case .authFailed: return "Invalid API key"
-            case .httpError: return "Network request failed"
+            case .networkError(let detail): return detail
+            case .rateLimited(let retry): return "Rate limited (retry after: \(retry))"
             case .accountNotFound: return "Account not found"
             case .noSmartDevice: return "No Home Mini found on this account"
             }

@@ -20,6 +20,7 @@
 		B1000004 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000005 /* Models.swift */; };
 		B1000005 /* SharedConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000006 /* SharedConfig.swift */; };
 		B1000006 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B2000006 /* Assets.xcassets */; };
+		B1000007 /* RefreshIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000009 /* RefreshIntent.swift */; };
 		C1000001 /* OctopusWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B3000001 /* OctopusWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
@@ -62,6 +63,7 @@
 		B2000006 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B2000007 /* OctopusWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OctopusWidget.entitlements; sourceTree = "<group>"; };
 		B2000008 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		B2000009 /* RefreshIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RefreshIntent.swift; sourceTree = "<group>"; };
 		B3000001 /* OctopusWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = OctopusWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -123,6 +125,7 @@
 				B2000008 /* Info.plist */,
 				B2000001 /* OctopusWidgetBundle.swift */,
 				B2000002 /* OctopusWidget.swift */,
+				B2000009 /* RefreshIntent.swift */,
 				B2000006 /* Assets.xcassets */,
 			);
 			path = OctopusWidget;
@@ -246,6 +249,7 @@
 				B1000003 /* OctopusAPI.swift in Sources */,
 				B1000004 /* Models.swift in Sources */,
 				B1000005 /* SharedConfig.swift in Sources */,
+				B1000007 /* RefreshIntent.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -429,7 +433,7 @@
 				CODE_SIGN_ENTITLEMENTS = OctopusWidget/OctopusWidget.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 4U3KPR6DJJ;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = OctopusWidget/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -457,7 +461,7 @@
 				CODE_SIGN_ENTITLEMENTS = OctopusWidget/OctopusWidget.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 4U3KPR6DJJ;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = OctopusWidget/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
