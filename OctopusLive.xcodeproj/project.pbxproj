@@ -13,6 +13,7 @@
 		A1000004 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A2000004 /* Assets.xcassets */; };
 		A1000005 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000005 /* Models.swift */; };
 		A1000006 /* SharedConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000006 /* SharedConfig.swift */; };
+		A1000007 /* LiveView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000008 /* LiveView.swift */; };
 		B1000001 /* OctopusWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000001 /* OctopusWidgetBundle.swift */; };
 		B1000002 /* OctopusWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000002 /* OctopusWidget.swift */; };
 		B1000003 /* OctopusAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000002 /* OctopusAPI.swift */; };
@@ -54,6 +55,7 @@
 		A2000005 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		A2000006 /* SharedConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedConfig.swift; sourceTree = "<group>"; };
 		A2000007 /* OctopusLive.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OctopusLive.entitlements; sourceTree = "<group>"; };
+		A2000008 /* LiveView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveView.swift; sourceTree = "<group>"; };
 		A3000001 /* OctopusLive.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OctopusLive.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B2000001 /* OctopusWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OctopusWidgetBundle.swift; sourceTree = "<group>"; };
 		B2000002 /* OctopusWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OctopusWidget.swift; sourceTree = "<group>"; };
@@ -96,6 +98,7 @@
 				A2000007 /* OctopusLive.entitlements */,
 				A2000001 /* OctopusLiveApp.swift */,
 				A2000003 /* SettingsView.swift */,
+				A2000008 /* LiveView.swift */,
 				A2000006 /* SharedConfig.swift */,
 				A2000002 /* OctopusAPI.swift */,
 				A2000005 /* Models.swift */,
@@ -230,6 +233,7 @@
 				A1000003 /* SettingsView.swift in Sources */,
 				A1000005 /* Models.swift in Sources */,
 				A1000006 /* SharedConfig.swift in Sources */,
+				A1000007 /* LiveView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -78,6 +78,7 @@ struct WidgetData {
     let averageDemandWatts: Double
     let todayKWh: Double
     let todayCostPounds: Double
+    let readings: [TelemetryReading]
     let timestamp: Date
 
     var currentDemandFormatted: String {
@@ -108,6 +109,7 @@ struct WidgetData {
         averageDemandWatts: 980,
         todayKWh: 8.2,
         todayCostPounds: 2.47,
+        readings: [],
         timestamp: Date()
     )
 }

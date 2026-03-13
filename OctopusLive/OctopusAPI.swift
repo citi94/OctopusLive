@@ -155,6 +155,7 @@ actor OctopusAPI {
             averageDemandWatts: avgDemand,
             todayKWh: totalKwh,
             todayCostPounds: costPounds,
+            readings: liveReadings,
             timestamp: now
         )
     }

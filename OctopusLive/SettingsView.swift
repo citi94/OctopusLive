@@ -7,6 +7,7 @@ struct SettingsView: View {
     @State private var status: ConnectionStatus = SharedConfig.isConfigured ? .connected : .idle
     @State private var errorMessage: String?
     @State private var isConnecting = false
+    @State private var showLive = false
 
     enum ConnectionStatus {
         case idle, connecting, connected, error
@@ -26,6 +27,7 @@ struct SettingsView: View {
                         statusSection
 
                         if status == .connected {
+                            viewLiveButton
                             widgetInstructions
                         }
                     }
@@ -33,6 +35,9 @@ struct SettingsView: View {
                 }
             }
             .navigationBarHidden(true)
+            .navigationDestination(isPresented: $showLive) {
+                LiveView()
+            }
         }
         .preferredColorScheme(.dark)
     }
@@ -163,6 +168,25 @@ struct SettingsView: View {
             .padding()
             .frame(maxWidth: .infinity)
             .background(Color.red.opacity(0.1))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    // MARK: - View Live Button
+
+    private var viewLiveButton: some View {
+        Button {
+            showLive = true
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "bolt.fill")
+                Text("View Live Usage")
+                    .fontWeight(.semibold)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .background(Color.green)
+            .foregroundStyle(.white)
             .clipShape(RoundedRectangle(cornerRadius: 12))
         }
     }
