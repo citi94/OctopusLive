@@ -7,11 +7,13 @@ struct SharedConfig {
         UserDefaults(suiteName: appGroup) ?? .standard
     }
 
+    // API key stored in Keychain for security
     static var apiKey: String {
-        get { defaults.string(forKey: "apiKey") ?? "" }
-        set { defaults.set(newValue, forKey: "apiKey") }
+        get { KeychainHelper.load(key: "apiKey") ?? "" }
+        set { KeychainHelper.save(key: "apiKey", value: newValue) }
     }
 
+    // Non-sensitive config in UserDefaults (shared with widget via App Group)
     static var accountNumber: String {
         get { defaults.string(forKey: "accountNumber") ?? "" }
         set { defaults.set(newValue, forKey: "accountNumber") }
@@ -34,5 +36,13 @@ struct SharedConfig {
 
     static var isConfigured: Bool {
         !apiKey.isEmpty && !accountNumber.isEmpty && !deviceId.isEmpty
+    }
+
+    static func deleteAll() {
+        KeychainHelper.deleteAll()
+        defaults.removeObject(forKey: "accountNumber")
+        defaults.removeObject(forKey: "deviceId")
+        defaults.removeObject(forKey: "mpan")
+        defaults.removeObject(forKey: "meterSerial")
     }
 }

@@ -18,7 +18,7 @@ struct OctopusTimelineProvider: TimelineProvider {
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<OctopusEntry>) -> Void) {
         fetchEntry { entry in
-            let nextUpdate = Calendar.current.date(byAdding: .minute, value: 5, to: Date())!
+            let nextUpdate = Calendar.current.date(byAdding: .minute, value: 5, to: Date()) ?? Date().addingTimeInterval(300)
             let timeline = Timeline(entries: [entry], policy: .after(nextUpdate))
             completion(timeline)
         }

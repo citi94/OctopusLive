@@ -3,7 +3,9 @@ import Foundation
 actor OctopusAPI {
     static let shared = OctopusAPI()
 
-    private let graphqlURL = URL(string: "https://api.octopus.energy/v1/graphql/")!
+    // swiftlint:disable:next force_unwrapping
+    private static let graphqlURL = URL(string: "https://api.octopus.energy/v1/graphql/")!
+    private var graphqlURL: URL { Self.graphqlURL }
 
     private var cachedToken: String?
     private var tokenExpiry: Date?
@@ -14,6 +16,16 @@ actor OctopusAPI {
     struct RateLimitInfo {
         let headers: [String: String]
         let timestamp: Date
+    }
+
+    // MARK: - Sanitization
+
+    /// Escape a string for safe inclusion in a GraphQL query string literal
+    private func sanitize(_ input: String) -> String {
+        input
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "")
     }
 
     // MARK: - Auth
@@ -27,7 +39,7 @@ actor OctopusAPI {
         guard !apiKey.isEmpty else { throw APIError.notConfigured }
 
         let query = """
-        mutation { obtainKrakenToken(input: { APIKey: "\(apiKey)" }) { token } }
+        mutation { obtainKrakenToken(input: { APIKey: "\(sanitize(apiKey))" }) { token } }
         """
 
         let response: GraphQLResponse<TokenResponse> = try await execute(query: query, token: nil)
@@ -49,7 +61,7 @@ actor OctopusAPI {
 
     func discoverDevice(apiKey: String, accountNumber: String) async throws -> (deviceId: String, mpan: String, serial: String) {
         let tokenQuery = """
-        mutation { obtainKrakenToken(input: { APIKey: "\(apiKey)" }) { token } }
+        mutation { obtainKrakenToken(input: { APIKey: "\(sanitize(apiKey))" }) { token } }
         """
         let tokenResponse: GraphQLResponse<TokenResponse> = try await execute(query: tokenQuery, token: nil)
         guard let token = tokenResponse.data?.obtainKrakenToken.token else {
@@ -58,7 +70,7 @@ actor OctopusAPI {
 
         let query = """
         {
-            account(accountNumber: "\(accountNumber)") {
+            account(accountNumber: "\(sanitize(accountNumber))") {
                 electricityAgreements(active: true) {
                     meterPoint {
                         mpan

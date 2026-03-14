@@ -7,39 +7,47 @@ struct SettingsView: View {
     @State private var status: ConnectionStatus = SharedConfig.isConfigured ? .connected : .idle
     @State private var errorMessage: String?
     @State private var isConnecting = false
-    @State private var showLive = false
+    @State private var showDeleteConfirmation = false
+
+    var onConnect: (() -> Void)?
+    var onDisconnect: (() -> Void)?
 
     enum ConnectionStatus {
         case idle, connecting, connected, error
     }
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                Color(red: 0.06, green: 0.06, blue: 0.12)
-                    .ignoresSafeArea()
+        ZStack {
+            Color(red: 0.06, green: 0.06, blue: 0.12)
+                .ignoresSafeArea()
 
-                ScrollView {
-                    VStack(spacing: 24) {
-                        header
-                        credentialsForm
-                        connectButton
-                        statusSection
+            ScrollView {
+                VStack(spacing: 24) {
+                    header
+                    credentialsForm
+                    connectButton
+                    statusSection
 
-                        if status == .connected {
-                            viewLiveButton
-                            widgetInstructions
-                        }
+                    if status == .connected {
+                        widgetInstructions
                     }
-                    .padding()
+
+                    disclaimer
+                    deleteSection
                 }
-            }
-            .navigationBarHidden(true)
-            .navigationDestination(isPresented: $showLive) {
-                LiveView()
+                .padding()
+                .padding(.bottom, 40)
             }
         }
+        .navigationTitle(onDisconnect != nil ? "Settings" : "")
+        .navigationBarTitleDisplayMode(.inline)
         .preferredColorScheme(.dark)
+        .alert("Delete All Data", isPresented: $showDeleteConfirmation) {
+            Button("Delete", role: .destructive) { deleteAllData() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will remove your API key, account details, and all stored data. You will need to reconnect.")
+        }
     }
 
     // MARK: - Header
@@ -54,12 +62,12 @@ struct SettingsView: View {
                 .font(.title.bold())
                 .foregroundStyle(.white)
 
-            Text("Connect your Octopus Energy account to see live usage on your home screen.")
+            Text("Connect your Octopus Energy account to see live electricity usage on your home screen.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
         }
-        .padding(.top, 40)
+        .padding(.top, onDisconnect != nil ? 10 : 40)
     }
 
     // MARK: - Form
@@ -78,6 +86,7 @@ struct SettingsView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
+                    .accessibilityHint("Your Octopus Energy API key, starts with sk_live_")
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -92,6 +101,7 @@ struct SettingsView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.characters)
+                    .accessibilityHint("Your Octopus Energy account number, starts with A-")
             }
 
             Text("Find these in your Octopus Energy account under Developer Settings.")
@@ -172,25 +182,6 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - View Live Button
-
-    private var viewLiveButton: some View {
-        Button {
-            showLive = true
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "bolt.fill")
-                Text("View Live Usage")
-                    .fontWeight(.semibold)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 14)
-            .background(Color.green)
-            .foregroundStyle(.white)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-        }
-    }
-
     // MARK: - Widget Instructions
 
     private var widgetInstructions: some View {
@@ -226,6 +217,39 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Disclaimer
+
+    private var disclaimer: some View {
+        VStack(spacing: 6) {
+            Text("This app is not affiliated with, endorsed by, or connected to Octopus Energy Ltd.")
+                .font(.caption2)
+                .foregroundStyle(.secondary.opacity(0.6))
+                .multilineTextAlignment(.center)
+
+            Text("Octopus Energy is a trade name of Octopus Energy Ltd.")
+                .font(.caption2)
+                .foregroundStyle(.secondary.opacity(0.5))
+                .multilineTextAlignment(.center)
+        }
+        .padding(.top, 8)
+    }
+
+    // MARK: - Delete Data
+
+    private var deleteSection: some View {
+        Button(role: .destructive) {
+            showDeleteConfirmation = true
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "trash")
+                Text("Delete All Data")
+            }
+            .font(.subheadline)
+            .foregroundStyle(.red.opacity(0.8))
+        }
+        .padding(.top, 4)
+    }
+
     // MARK: - Actions
 
     private func connect() {
@@ -247,13 +271,12 @@ struct SettingsView: View {
                 SharedConfig.meterSerial = result.serial
 
                 await OctopusAPI.shared.clearTokenCache()
-
-                // Tell widgets to refresh
                 WidgetCenter.shared.reloadAllTimelines()
 
                 await MainActor.run {
                     status = .connected
                     isConnecting = false
+                    onConnect?()
                 }
             } catch {
                 await MainActor.run {
@@ -263,6 +286,16 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    private func deleteAllData() {
+        SharedConfig.deleteAll()
+        WidgetCenter.shared.reloadAllTimelines()
+        apiKey = ""
+        accountNumber = ""
+        status = .idle
+        errorMessage = nil
+        onDisconnect?()
     }
 }
 
