@@ -41,7 +41,6 @@ struct SettingsView: View {
         }
         .navigationTitle(onDisconnect != nil ? "Settings" : "")
         .navigationBarTitleDisplayMode(.inline)
-        .preferredColorScheme(.dark)
         .alert("Delete All Data", isPresented: $showDeleteConfirmation) {
             Button("Delete", role: .destructive) { deleteAllData() }
             Button("Cancel", role: .cancel) {}

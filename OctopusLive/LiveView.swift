@@ -1,6 +1,12 @@
 import SwiftUI
 
 struct LiveView: View {
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f
+    }()
+
     @State private var currentWatts: Double = 0
     @State private var avgWatts: Double = 0
     @State private var todayKWh: Double = 0
@@ -27,12 +33,12 @@ struct LiveView: View {
                         demandSection
                         chartSection
                         todaySection
-                        debugSection
+                        updatedLabel
                     }
                     .padding()
                 }
             } else if let error = error {
-                VStack(spacing: 12) {
+                VStack(spacing: 16) {
                     Image(systemName: "bolt.trianglebadge.exclamationmark.fill")
                         .font(.largeTitle)
                         .foregroundStyle(.red)
@@ -41,6 +47,19 @@ struct LiveView: View {
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal)
+                    Button {
+                        self.error = nil
+                        fetchLive()
+                        fetchToday()
+                    } label: {
+                        Label("Retry", systemImage: "arrow.clockwise")
+                            .font(.subheadline.bold())
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 10)
+                            .background(Color.yellow)
+                            .foregroundStyle(.black)
+                            .clipShape(Capsule())
+                    }
                 }
             } else {
                 ProgressView("Loading...")
@@ -49,7 +68,6 @@ struct LiveView: View {
         }
         .navigationTitle("Octopus Live")
         .navigationBarTitleDisplayMode(.inline)
-        .preferredColorScheme(.dark)
         .onAppear { startPolling() }
         .onDisappear { stopPolling() }
         .onChange(of: chartRange) {
@@ -117,24 +135,14 @@ struct LiveView: View {
         .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 
-    // MARK: - Debug / Rate Info
+    // MARK: - Updated
 
-    private var debugSection: some View {
-        VStack(spacing: 4) {
+    private var updatedLabel: some View {
+        Group {
             if let lastUpdate {
-                let f = DateFormatter()
-                let _ = f.dateFormat = "HH:mm:ss"
-                Text("Updated \(f.string(from: lastUpdate)) | \(requestCount) requests this session")
+                Text("Updated \(Self.timeFormatter.string(from: lastUpdate))")
                     .font(.caption2)
-                    .foregroundStyle(.secondary.opacity(0.6))
-            }
-            Text("Polling every \(Int(liveInterval))s")
-                .font(.caption2)
-                .foregroundStyle(.secondary.opacity(0.4))
-            if let rateLimitInfo {
-                Text(rateLimitInfo)
-                    .font(.caption2)
-                    .foregroundStyle(.orange.opacity(0.6))
+                    .foregroundStyle(.secondary.opacity(0.5))
             }
         }
     }
@@ -325,15 +333,6 @@ struct DemandChart: View {
 }
 
 // MARK: - Helpers
-
-private func demandColor(_ watts: Double) -> Color {
-    switch watts {
-    case ..<500: return .green
-    case ..<1500: return Color(red: 0.3, green: 0.69, blue: 0.31)
-    case ..<3000: return .orange
-    default: return .red
-    }
-}
 
 #Preview {
     NavigationStack {

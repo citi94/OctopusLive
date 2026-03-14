@@ -52,12 +52,7 @@ struct OctopusEntry: TimelineEntry {
 // MARK: - Widget Helpers
 
 func widgetDemandColor(_ watts: Double) -> Color {
-    switch watts {
-    case ..<500: return .green
-    case ..<1500: return Color(red: 0.3, green: 0.69, blue: 0.31)
-    case ..<3000: return .orange
-    default: return .red
-    }
+    demandColor(watts)
 }
 
 func widgetTimeString(_ date: Date) -> String {

@@ -6,7 +6,7 @@ struct RefreshEnergyIntent: AppIntent {
     static var description: IntentDescription = "Fetches the latest energy reading"
 
     func perform() async throws -> some IntentResult {
-        // Widget timeline automatically reloads after this returns
+        WidgetCenter.shared.reloadTimelines(ofKind: "OctopusWidget")
         return .result()
     }
 }

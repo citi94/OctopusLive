@@ -124,7 +124,7 @@ actor OctopusAPI {
         let query = """
         {
             smartMeterTelemetry(
-                deviceId: "\(deviceId)",
+                deviceId: "\(sanitize(deviceId))",
                 grouping: TEN_SECONDS,
                 start: "\(fmt.string(from: now.addingTimeInterval(-5 * 60)))",
                 end: "\(fmt.string(from: now))"
@@ -157,7 +157,7 @@ actor OctopusAPI {
         let query = """
         {
             smartMeterTelemetry(
-                deviceId: "\(deviceId)",
+                deviceId: "\(sanitize(deviceId))",
                 grouping: HALF_HOURLY,
                 start: "\(fmt.string(from: Calendar.current.startOfDay(for: now)))",
                 end: "\(fmt.string(from: now))"
@@ -186,7 +186,7 @@ actor OctopusAPI {
         let query = """
         {
             smartMeterTelemetry(
-                deviceId: "\(deviceId)",
+                deviceId: "\(sanitize(deviceId))",
                 grouping: \(range.grouping),
                 start: "\(fmt.string(from: now.addingTimeInterval(-range.seconds)))",
                 end: "\(fmt.string(from: now))"
@@ -221,7 +221,7 @@ actor OctopusAPI {
             let isoChartStart = fmt.string(from: now.addingTimeInterval(-chartRange.seconds))
             chartAlias = """
                 chart: smartMeterTelemetry(
-                    deviceId: "\(deviceId)",
+                    deviceId: "\(sanitize(deviceId))",
                     grouping: \(chartRange.grouping),
                     start: "\(isoChartStart)",
                     end: "\(isoNow)"
@@ -232,13 +232,13 @@ actor OctopusAPI {
         let query = """
         {
             live: smartMeterTelemetry(
-                deviceId: "\(deviceId)",
+                deviceId: "\(sanitize(deviceId))",
                 grouping: TEN_SECONDS,
                 start: "\(isoFiveMin)",
                 end: "\(isoNow)"
             ) { readAt consumptionDelta demand }
             today: smartMeterTelemetry(
-                deviceId: "\(deviceId)",
+                deviceId: "\(sanitize(deviceId))",
                 grouping: HALF_HOURLY,
                 start: "\(isoStartOfDay)",
                 end: "\(isoNow)"
@@ -273,7 +273,7 @@ actor OctopusAPI {
     // MARK: - Network
 
     private func execute<T: Decodable>(query: String, token: String?) async throws -> GraphQLResponse<T> {
-        var request = URLRequest(url: graphqlURL)
+        var request = URLRequest(url: graphqlURL, timeoutInterval: 15)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let token = token {

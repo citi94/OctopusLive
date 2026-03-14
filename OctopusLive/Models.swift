@@ -129,6 +129,19 @@ struct LiveData {
     )
 }
 
+// MARK: - Demand Color
+
+import SwiftUI
+
+func demandColor(_ watts: Double) -> Color {
+    switch watts {
+    case ..<300: return .green
+    case ..<1000: return .yellow
+    case ..<3000: return .orange
+    default: return .red
+    }
+}
+
 // MARK: - Formatting
 
 func formatWatts(_ w: Double) -> String {
@@ -136,6 +149,7 @@ func formatWatts(_ w: Double) -> String {
     formatter.numberStyle = .decimal
     formatter.maximumFractionDigits = 0
     formatter.groupingSeparator = ","
-    let num = formatter.string(from: NSNumber(value: Int(w))) ?? "\(Int(w))"
+    let rounded = Int(w.rounded())
+    let num = formatter.string(from: NSNumber(value: rounded)) ?? "\(rounded)"
     return "\(num)W"
 }
