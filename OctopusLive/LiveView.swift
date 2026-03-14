@@ -7,6 +7,8 @@ struct LiveView: View {
         return f
     }()
 
+    var isDemo: Bool = false
+
     @State private var currentWatts: Double = 0
     @State private var avgWatts: Double = 0
     @State private var todayKWh: Double = 0
@@ -15,8 +17,6 @@ struct LiveView: View {
     @State private var chartRange: ChartRange = .fiveMin
     @State private var lastUpdate: Date?
     @State private var error: String?
-    @State private var rateLimitInfo: String?
-    @State private var requestCount: Int = 0
     @State private var liveTimer: Timer?
     @State private var todayTimer: Timer?
     @State private var liveInterval: TimeInterval = 40
@@ -150,6 +150,13 @@ struct LiveView: View {
     // MARK: - Polling
 
     private func startPolling() {
+        if isDemo {
+            loadDemoData()
+            liveTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { _ in
+                loadDemoData()
+            }
+            return
+        }
         fetchLive()
         fetchToday()
         liveTimer = Timer.scheduledTimer(withTimeInterval: liveInterval, repeats: true) { _ in
@@ -158,6 +165,14 @@ struct LiveView: View {
         todayTimer = Timer.scheduledTimer(withTimeInterval: todayInterval, repeats: true) { _ in
             fetchToday()
         }
+    }
+
+    private func loadDemoData() {
+        let base = Double.random(in: 800...2500)
+        currentWatts = base + Double.random(in: -200...200)
+        avgWatts = base
+        todayKWh = Double.random(in: 4...12)
+        lastUpdate = Date()
     }
 
     private func stopPolling() {
@@ -171,18 +186,12 @@ struct LiveView: View {
         Task {
             do {
                 let result = try await OctopusAPI.shared.fetchLiveDemand()
-                let rateInfo = await OctopusAPI.shared.lastRateLimitInfo
                 await MainActor.run {
                     self.currentWatts = result.current
                     self.avgWatts = result.avg
                     self.liveReadings = result.readings
                     self.lastUpdate = Date()
                     self.error = nil
-                    self.requestCount += 1
-                    if let info = rateInfo {
-                        self.rateLimitInfo = info.headers.map { "\($0.key): \($0.value)" }.joined(separator: " | ")
-                    }
-                    // Succeeded - if we were backed off, gradually recover
                     if liveInterval > 40 {
                         adjustPolling(interval: max(40, liveInterval - 10))
                     }
@@ -190,7 +199,6 @@ struct LiveView: View {
             } catch let apiError as OctopusAPI.APIError {
                 await MainActor.run {
                     if case .rateLimited = apiError {
-                        self.rateLimitInfo = "Rate limited - backing off to \(Int(liveInterval + 30))s"
                         adjustPolling(interval: min(120, liveInterval + 30))
                     } else {
                         self.error = apiError.localizedDescription
@@ -219,7 +227,6 @@ struct LiveView: View {
                 let kwh = try await OctopusAPI.shared.fetchTodayKWh()
                 await MainActor.run {
                     self.todayKWh = kwh
-                    self.requestCount += 1
                 }
             } catch {
                 // Non-critical, don't overwrite main error
@@ -234,7 +241,6 @@ struct LiveView: View {
                 let readings = try await OctopusAPI.shared.fetchChartData(range: chartRange)
                 await MainActor.run {
                     self.chartReadings = readings
-                    self.requestCount += 1
                 }
             } catch {
                 // Non-critical

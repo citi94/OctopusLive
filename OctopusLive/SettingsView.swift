@@ -11,6 +11,7 @@ struct SettingsView: View {
 
     var onConnect: (() -> Void)?
     var onDisconnect: (() -> Void)?
+    var onDemo: (() -> Void)?
 
     enum ConnectionStatus {
         case idle, connecting, connected, error
@@ -32,7 +33,12 @@ struct SettingsView: View {
                         widgetInstructions
                     }
 
+                    if onDemo != nil && status != .connected {
+                        demoButton
+                    }
+
                     disclaimer
+                    privacyPolicyLink
                     deleteSection
                 }
                 .padding()
@@ -216,6 +222,18 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Demo Button
+
+    private var demoButton: some View {
+        Button {
+            onDemo?()
+        } label: {
+            Text("Try with demo data")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+    }
+
     // MARK: - Disclaimer
 
     private var disclaimer: some View {
@@ -231,6 +249,16 @@ struct SettingsView: View {
                 .multilineTextAlignment(.center)
         }
         .padding(.top, 8)
+    }
+
+    // MARK: - Privacy Policy
+
+    private var privacyPolicyLink: some View {
+        Link(destination: URL(string: "https://citi94.github.io/OctopusLive/privacy")!) {
+            Text("Privacy Policy")
+                .font(.caption)
+                .foregroundStyle(.secondary.opacity(0.6))
+        }
     }
 
     // MARK: - Delete Data

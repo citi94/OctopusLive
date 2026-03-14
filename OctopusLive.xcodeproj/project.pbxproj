@@ -16,7 +16,7 @@
 		A1000007 /* LiveView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000008 /* LiveView.swift */; };
 		A1000008 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000009 /* KeychainHelper.swift */; };
 		A1000009 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A200000A /* PrivacyInfo.xcprivacy */; };
-		B1000008 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000009 /* KeychainHelper.swift */; };
+		B1000009 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B200000A /* PrivacyInfo.xcprivacy */; };
 		B1000001 /* OctopusWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000001 /* OctopusWidgetBundle.swift */; };
 		B1000002 /* OctopusWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000002 /* OctopusWidget.swift */; };
 		B1000003 /* OctopusAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000002 /* OctopusAPI.swift */; };
@@ -69,6 +69,7 @@
 		B2000007 /* OctopusWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OctopusWidget.entitlements; sourceTree = "<group>"; };
 		B2000008 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B2000009 /* RefreshIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RefreshIntent.swift; sourceTree = "<group>"; };
+		B200000A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		B3000001 /* OctopusWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = OctopusWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -133,6 +134,7 @@
 				B2000001 /* OctopusWidgetBundle.swift */,
 				B2000002 /* OctopusWidget.swift */,
 				B2000009 /* RefreshIntent.swift */,
+				B200000A /* PrivacyInfo.xcprivacy */,
 				B2000006 /* Assets.xcassets */,
 			);
 			path = OctopusWidget;
@@ -229,6 +231,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				B1000006 /* Assets.xcassets in Resources */,
+				B1000009 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

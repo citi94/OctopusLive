@@ -11,17 +11,19 @@ struct OctopusLiveApp: App {
 
 struct RootView: View {
     @State private var isConfigured = SharedConfig.isConfigured
+    @State private var isDemo = false
 
     var body: some View {
         Group {
-            if isConfigured {
+            if isConfigured || isDemo {
                 NavigationStack {
-                    LiveView()
+                    LiveView(isDemo: isDemo)
                         .toolbar {
                             ToolbarItem(placement: .topBarTrailing) {
                                 NavigationLink {
                                     SettingsView(onDisconnect: {
                                         isConfigured = false
+                                        isDemo = false
                                     })
                                 } label: {
                                     Image(systemName: "gearshape")
@@ -31,9 +33,10 @@ struct RootView: View {
                         }
                 }
             } else {
-                SettingsView(onConnect: {
-                    isConfigured = true
-                })
+                SettingsView(
+                    onConnect: { isConfigured = true },
+                    onDemo: { isDemo = true }
+                )
             }
         }
         .preferredColorScheme(.dark)
