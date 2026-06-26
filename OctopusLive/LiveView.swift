@@ -16,6 +16,8 @@ struct LiveView: View {
     @State private var chartReadings: [TelemetryReading] = []
     @State private var chartRange: ChartRange = .fiveMin
     @State private var lastUpdate: Date?
+    @State private var hasLiveData = false
+    @State private var consecutiveFailures = 0
     @State private var error: String?
     @State private var liveTimer: Timer?
     @State private var todayTimer: Timer?
@@ -27,44 +29,7 @@ struct LiveView: View {
             Color(red: 0.06, green: 0.06, blue: 0.12)
                 .ignoresSafeArea()
 
-            if lastUpdate != nil {
-                ScrollView {
-                    VStack(spacing: 24) {
-                        demandSection
-                        chartSection
-                        todaySection
-                        updatedLabel
-                    }
-                    .padding()
-                }
-            } else if let error = error {
-                VStack(spacing: 16) {
-                    Image(systemName: "bolt.trianglebadge.exclamationmark.fill")
-                        .font(.largeTitle)
-                        .foregroundStyle(.red)
-                    Text(error)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
-                    Button {
-                        self.error = nil
-                        fetchLive()
-                        fetchToday()
-                    } label: {
-                        Label("Retry", systemImage: "arrow.clockwise")
-                            .font(.subheadline.bold())
-                            .padding(.horizontal, 24)
-                            .padding(.vertical, 10)
-                            .background(Color.yellow)
-                            .foregroundStyle(.black)
-                            .clipShape(Capsule())
-                    }
-                }
-            } else {
-                ProgressView("Loading...")
-                    .foregroundStyle(.white)
-            }
+            content
         }
         .navigationTitle("Octopus Live")
         .navigationBarTitleDisplayMode(.inline)
@@ -72,6 +37,92 @@ struct LiveView: View {
         .onDisappear { stopPolling() }
         .onChange(of: chartRange) {
             fetchChart()
+        }
+    }
+
+    // MARK: - Content router
+
+    @ViewBuilder
+    private var content: some View {
+        // A persistent failure (2+ in a row) surfaces even over stale data,
+        // so a mid-session auth/decode break doesn't freeze on old numbers.
+        let hardError = error != nil && (lastUpdate == nil || consecutiveFailures >= 2)
+
+        if hardError, let error {
+            errorView(message: error)
+        } else if lastUpdate != nil && hasLiveData {
+            ScrollView {
+                VStack(spacing: 24) {
+                    demandSection
+                    chartSection
+                    todaySection
+                    updatedLabel
+                }
+                .padding()
+            }
+        } else if lastUpdate != nil {
+            noLiveDataView
+        } else {
+            ProgressView("Loading...")
+                .foregroundStyle(.white)
+        }
+    }
+
+    private func errorView(message: String) -> some View {
+        VStack(spacing: 16) {
+            Image(systemName: "bolt.trianglebadge.exclamationmark.fill")
+                .font(.largeTitle)
+                .foregroundStyle(.red)
+            Text(message)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal)
+            retryButton
+        }
+    }
+
+    // Connected (and authenticated) but the Home Mini isn't sending real-time
+    // demand yet — show why instead of a misleading confident "0W".
+    private var noLiveDataView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "antenna.radiowaves.left.and.right.slash")
+                .font(.largeTitle)
+                .foregroundStyle(.yellow)
+            Text("Connected, but no live data yet")
+                .font(.headline)
+                .foregroundStyle(.white)
+            Text("Your Octopus Home Mini isn't sending real-time readings right now. Make sure it's plugged in, connected to Wi-Fi, and online — live data can take a few minutes to start.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal)
+
+            if todayKWh > 0 {
+                Text(String(format: "%.1f kWh used today", todayKWh))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            retryButton
+        }
+        .padding()
+    }
+
+    private var retryButton: some View {
+        Button {
+            self.error = nil
+            consecutiveFailures = 0
+            fetchLive()
+            fetchToday()
+        } label: {
+            Label("Retry", systemImage: "arrow.clockwise")
+                .font(.subheadline.bold())
+                .padding(.horizontal, 24)
+                .padding(.vertical, 10)
+                .background(Color.yellow)
+                .foregroundStyle(.black)
+                .clipShape(Capsule())
         }
     }
 
@@ -172,6 +223,7 @@ struct LiveView: View {
         currentWatts = base + Double.random(in: -200...200)
         avgWatts = base
         todayKWh = Double.random(in: 4...12)
+        hasLiveData = true
         lastUpdate = Date()
     }
 
@@ -190,8 +242,10 @@ struct LiveView: View {
                     self.currentWatts = result.current
                     self.avgWatts = result.avg
                     self.liveReadings = result.readings
+                    self.hasLiveData = result.readings.contains { $0.hasDemand }
                     self.lastUpdate = Date()
                     self.error = nil
+                    self.consecutiveFailures = 0
                     if liveInterval > 40 {
                         adjustPolling(interval: max(40, liveInterval - 10))
                     }
@@ -201,11 +255,13 @@ struct LiveView: View {
                     if case .rateLimited = apiError {
                         adjustPolling(interval: min(120, liveInterval + 30))
                     } else {
+                        self.consecutiveFailures += 1
                         self.error = apiError.localizedDescription
                     }
                 }
             } catch {
                 await MainActor.run {
+                    self.consecutiveFailures += 1
                     self.error = error.localizedDescription
                 }
             }

@@ -7,9 +7,31 @@ struct SharedConfig {
         UserDefaults(suiteName: appGroup) ?? .standard
     }
 
+    /// The Octopus API key — the one true secret. Stored in the (shared) Keychain
+    /// rather than the app-group plist, which is plaintext. Legacy installs that
+    /// still hold the key in UserDefaults are migrated transparently on first read.
     static var apiKey: String {
-        get { defaults.string(forKey: "apiKey") ?? "" }
-        set { defaults.set(newValue, forKey: "apiKey") }
+        get {
+            if let key = KeychainHelper.load(key: "apiKey"), !key.isEmpty {
+                return key
+            }
+            // One-time migration from the old plaintext UserDefaults storage.
+            if let legacy = defaults.string(forKey: "apiKey"), !legacy.isEmpty {
+                KeychainHelper.save(key: "apiKey", value: legacy)
+                defaults.removeObject(forKey: "apiKey")
+                return legacy
+            }
+            return ""
+        }
+        set {
+            if newValue.isEmpty {
+                KeychainHelper.delete(key: "apiKey")
+            } else {
+                KeychainHelper.save(key: "apiKey", value: newValue)
+            }
+            // Never leave a plaintext copy behind.
+            defaults.removeObject(forKey: "apiKey")
+        }
     }
 
     static var accountNumber: String {
@@ -40,5 +62,6 @@ struct SharedConfig {
         for key in ["apiKey", "accountNumber", "deviceId", "mpan", "meterSerial"] {
             defaults.removeObject(forKey: key)
         }
+        KeychainHelper.deleteAll()
     }
 }

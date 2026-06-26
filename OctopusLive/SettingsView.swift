@@ -112,6 +112,16 @@ struct SettingsView: View {
             Text("Find these in your Octopus Energy account under Developer Settings.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "info.circle")
+                    .font(.caption2)
+                    .foregroundStyle(.yellow.opacity(0.8))
+                Text("Requires an Octopus **Home Mini** — the free real-time device that plugs into your smart meter. Without one, your account won't report live usage.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.top, 2)
         }
     }
 

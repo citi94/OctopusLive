@@ -33,7 +33,13 @@ struct OctopusTimelineProvider: TimelineProvider {
         Task {
             do {
                 let data = try await OctopusAPI.shared.fetchAll()
-                completion(OctopusEntry(date: Date(), data: data, error: nil))
+                if data.hasLiveData {
+                    completion(OctopusEntry(date: Date(), data: data, error: nil))
+                } else {
+                    // Authenticated, but the Home Mini isn't streaming real-time
+                    // demand — show why instead of a misleading 0W.
+                    completion(OctopusEntry(date: Date(), data: nil, error: "No live data — check your Home Mini is online"))
+                }
             } catch {
                 completion(OctopusEntry(date: Date(), data: nil, error: error.localizedDescription))
             }

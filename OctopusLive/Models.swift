@@ -63,17 +63,27 @@ struct TelemetryResponse: Decodable {
 
 struct TelemetryReading: Decodable, Identifiable {
     let readAt: String
-    let consumptionDelta: String
-    let demand: String
+    // Kraken returns these as null for intervals without a real-time read
+    // (e.g. HALF_HOURLY buckets, or gaps when the Home Mini wasn't streaming),
+    // so they must be optional or a single null fails the whole decode.
+    let consumptionDelta: String?
+    let demand: String?
 
     var id: String { readAt }
 
     var demandWatts: Double {
-        Double(demand) ?? 0
+        Double(demand ?? "") ?? 0
     }
 
     var consumptionWh: Double {
-        Double(consumptionDelta) ?? 0
+        Double(consumptionDelta ?? "") ?? 0
+    }
+
+    /// True when this interval carries an actual real-time demand reading
+    /// (non-null and numeric, including a genuine 0 W).
+    var hasDemand: Bool {
+        guard let demand else { return false }
+        return Double(demand) != nil
     }
 }
 
@@ -118,6 +128,12 @@ struct LiveData {
     let readings: [TelemetryReading]
     let chartReadings: [TelemetryReading]
     let timestamp: Date
+
+    /// True when the live window actually contains real-time demand readings.
+    /// Distinguishes "Home Mini streaming" from "connected but no data yet".
+    var hasLiveData: Bool {
+        readings.contains { $0.hasDemand }
+    }
 
     static let placeholder = LiveData(
         currentDemandWatts: 1240,

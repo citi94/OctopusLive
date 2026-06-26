@@ -22,6 +22,7 @@
 		B1000003 /* OctopusAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000002 /* OctopusAPI.swift */; };
 		B1000004 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000005 /* Models.swift */; };
 		B1000005 /* SharedConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000006 /* SharedConfig.swift */; };
+		B1000008 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000009 /* KeychainHelper.swift */; };
 		B1000006 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B2000006 /* Assets.xcassets */; };
 		B1000007 /* RefreshIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000009 /* RefreshIntent.swift */; };
 		C1000001 /* OctopusWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B3000001 /* OctopusWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
