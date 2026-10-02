@@ -109,7 +109,7 @@ struct SettingsView: View {
                     .accessibilityHint("Your Octopus Energy account number, starts with A-")
             }
 
-            Text("Find these in your Octopus Energy account under Developer Settings.")
+            Text("Find your API key on the Octopus website under Personal details → API access. Your account number is on your dashboard.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 

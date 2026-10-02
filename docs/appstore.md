@@ -23,7 +23,7 @@ Features:
 Requirements:
 - An Octopus Energy account (octopus.energy)
 - An Octopus Home Mini device connected to your smart meter
-- Your API key (found in your Octopus account under Developer Settings)
+- Your API key (found on the Octopus website under Personal details → API access)
 
 This app is not affiliated with, endorsed by, or connected to Octopus Energy Ltd.
 
@@ -34,6 +34,9 @@ energy,electricity,smart meter,widget,usage,power,live,monitor,kwh,watts,consump
 ## Category
 Primary: Utilities
 Secondary: Lifestyle
+
+## Support URL
+https://citi94.github.io/OctopusLive/support
 
 ## Privacy Policy URL
 https://citi94.github.io/OctopusLive/privacy
