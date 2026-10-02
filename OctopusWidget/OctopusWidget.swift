@@ -25,6 +25,10 @@ struct OctopusTimelineProvider: TimelineProvider {
     }
 
     private func fetchEntry(completion: @escaping (OctopusEntry) -> Void) {
+        if SharedConfig.isDemo && !SharedConfig.isConfigured {
+            completion(OctopusEntry(date: Date(), data: .placeholder, error: nil))
+            return
+        }
         guard SharedConfig.isConfigured else {
             completion(OctopusEntry(date: Date(), data: nil, error: "Open app to configure"))
             return
@@ -34,6 +38,7 @@ struct OctopusTimelineProvider: TimelineProvider {
             do {
                 let data = try await OctopusAPI.shared.fetchAll()
                 if data.hasLiveData {
+                    SharedConfig.lastLiveData = data
                     completion(OctopusEntry(date: Date(), data: data, error: nil))
                 } else {
                     // Authenticated, but the Home Mini isn't streaming real-time
@@ -41,7 +46,15 @@ struct OctopusTimelineProvider: TimelineProvider {
                     completion(OctopusEntry(date: Date(), data: nil, error: "No live data — check your Home Mini is online"))
                 }
             } catch {
-                completion(OctopusEntry(date: Date(), data: nil, error: error.localizedDescription))
+                // Keep showing the last good reading (its timestamp shows its age)
+                // for a while rather than blanking the widget on a transient failure.
+                if let cached = SharedConfig.lastLiveData,
+                   Date().timeIntervalSince(cached.timestamp) < 2 * 60 * 60 {
+                    completion(OctopusEntry(date: Date(), data: cached, error: nil))
+                } else {
+                    let message = (error as? OctopusAPI.APIError)?.shortDescription ?? "Couldn't reach Octopus"
+                    completion(OctopusEntry(date: Date(), data: nil, error: message))
+                }
             }
         }
     }
@@ -323,8 +336,10 @@ struct OctopusAccessoryCircularView: View {
                     .font(.system(size: 12, weight: .bold, design: .rounded))
             }
             .gaugeStyle(.accessoryCircular)
+            .containerBackground(for: .widget) { AccessoryWidgetBackground() }
         } else {
             Image(systemName: "bolt.slash")
+                .containerBackground(for: .widget) { AccessoryWidgetBackground() }
         }
     }
 
@@ -360,15 +375,17 @@ struct OctopusAccessoryRectangularView: View {
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
+            .containerBackground(for: .widget) { Color.clear }
         } else {
             VStack(alignment: .leading) {
                 HStack(spacing: 4) {
                     Image(systemName: "bolt.slash")
                         .font(.system(size: 9))
-                    Text("Not configured")
+                    Text(SharedConfig.isConfigured ? "No live data" : "Open app to set up")
                         .font(.system(size: 10))
                 }
             }
+            .containerBackground(for: .widget) { Color.clear }
         }
     }
 }
@@ -381,8 +398,10 @@ struct OctopusAccessoryInlineView: View {
     var body: some View {
         if let data = entry.data {
             Label(formatWatts(data.currentDemandWatts), systemImage: "bolt.fill")
+                .containerBackground(for: .widget) { Color.clear }
         } else {
             Label("--", systemImage: "bolt.slash")
+                .containerBackground(for: .widget) { Color.clear }
         }
     }
 }

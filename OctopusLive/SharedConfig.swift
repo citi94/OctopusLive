@@ -54,12 +54,49 @@ struct SharedConfig {
         set { defaults.set(newValue, forKey: "meterSerial") }
     }
 
+    /// Set while the app is in demo mode so the widget can show sample data too
+    /// (App Review exercises the widget without an Octopus account).
+    static var isDemo: Bool {
+        get { defaults.bool(forKey: "isDemo") }
+        set { defaults.set(newValue, forKey: "isDemo") }
+    }
+
+    /// Last successful widget fetch, shown (with its timestamp) when a background
+    /// refresh fails, instead of blanking the widget on a flaky connection.
+    static var lastLiveData: LiveData? {
+        get {
+            guard let data = defaults.data(forKey: "lastLiveData") else { return nil }
+            return try? JSONDecoder().decode(LiveData.self, from: data)
+        }
+        set {
+            if let newValue, let data = try? JSONEncoder().encode(newValue) {
+                defaults.set(data, forKey: "lastLiveData")
+            } else {
+                defaults.removeObject(forKey: "lastLiveData")
+            }
+        }
+    }
+
     static var isConfigured: Bool {
         !apiKey.isEmpty && !accountNumber.isEmpty && !deviceId.isEmpty
     }
 
+    /// Keychain items survive app deletion but UserDefaults don't, so a reinstall
+    /// would otherwise resurrect the old API key. On the first launch of a fresh
+    /// install, drop any orphaned keychain item. An existing setup (account number
+    /// still present) means this is an upgrade, not a reinstall, so keep it.
+    /// Call from the app only — the widget can run before the app's first launch.
+    static func clearOrphanedKeychainOnFreshInstall() {
+        let flag = "hasLaunched"
+        guard !defaults.bool(forKey: flag) else { return }
+        if accountNumber.isEmpty {
+            KeychainHelper.deleteAll()
+        }
+        defaults.set(true, forKey: flag)
+    }
+
     static func deleteAll() {
-        for key in ["apiKey", "accountNumber", "deviceId", "mpan", "meterSerial"] {
+        for key in ["apiKey", "accountNumber", "deviceId", "mpan", "meterSerial", "isDemo", "lastLiveData"] {
             defaults.removeObject(forKey: key)
         }
         KeychainHelper.deleteAll()

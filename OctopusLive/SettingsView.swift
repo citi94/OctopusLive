@@ -209,8 +209,12 @@ struct SettingsView: View {
                 instructionRow(number: "1", text: "Go to your home screen and long-press")
                 instructionRow(number: "2", text: "Tap the + button (top left)")
                 instructionRow(number: "3", text: "Search for \"Octopus Live\"")
-                instructionRow(number: "4", text: "Choose small or medium size")
+                instructionRow(number: "4", text: "Pick a size — small, medium or large")
             }
+
+            Text("Lock screen widgets are also available — long-press your lock screen and tap Customize.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -290,6 +294,13 @@ struct SettingsView: View {
     // MARK: - Actions
 
     private func connect() {
+        // Pasted keys often carry stray whitespace/newlines, which would make a
+        // valid key fail authentication.
+        apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        accountNumber = accountNumber.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let apiKey = apiKey
+        let accountNumber = accountNumber
+
         isConnecting = true
         status = .connecting
         errorMessage = nil

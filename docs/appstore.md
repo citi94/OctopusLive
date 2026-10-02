@@ -12,7 +12,8 @@ See your home electricity usage in real time, right from your home screen and lo
 Octopus Live connects to your Octopus Energy account via their public API and displays live power demand from your Octopus Home Mini smart meter device. View your current usage, track consumption over time, and keep an eye on your daily total.
 
 Features:
-- Live electricity demand updated every 40 seconds
+- Live electricity demand in the app, updated every 40 seconds
+- Widgets refresh through the day as iOS allows, with a tap-to-refresh button
 - Home screen widgets (small, medium, large)
 - Lock screen widgets (circular, rectangular, inline)
 - Interactive chart with adjustable time ranges (5m, 15m, 1h, 6h, 24h)

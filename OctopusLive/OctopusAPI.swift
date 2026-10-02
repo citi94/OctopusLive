@@ -9,6 +9,9 @@ actor OctopusAPI {
 
     private var cachedToken: String?
     private var tokenExpiry: Date?
+    // The actor is re-entrant across awaits, so concurrent callers (live + today
+    // + chart fire together) would each mint a token; share one in-flight fetch.
+    private var tokenTask: Task<String, Error>?
 
     // Rate limit tracking
     private(set) var lastRateLimitInfo: RateLimitInfo?
@@ -35,6 +38,10 @@ actor OctopusAPI {
             return token
         }
 
+        if let tokenTask {
+            return try await tokenTask.value
+        }
+
         let apiKey = SharedConfig.apiKey
         guard !apiKey.isEmpty else { throw APIError.notConfigured }
 
@@ -42,11 +49,17 @@ actor OctopusAPI {
         mutation { obtainKrakenToken(input: { APIKey: "\(sanitize(apiKey))" }) { token } }
         """
 
-        let response: GraphQLResponse<TokenResponse> = try await execute(query: query, token: nil)
-        guard let token = response.data?.obtainKrakenToken.token else {
-            throw APIError.authFailed
+        let task = Task<String, Error> {
+            let response: GraphQLResponse<TokenResponse> = try await execute(query: query, token: nil)
+            guard let token = response.data?.obtainKrakenToken.token else {
+                throw APIError.authFailed
+            }
+            return token
         }
+        tokenTask = task
+        defer { tokenTask = nil }
 
+        let token = try await task.value
         cachedToken = token
         tokenExpiry = Date().addingTimeInterval(55 * 60)
         return token
@@ -55,6 +68,7 @@ actor OctopusAPI {
     func clearTokenCache() {
         cachedToken = nil
         tokenExpiry = nil
+        tokenTask = nil
     }
 
     // MARK: - Account Discovery
@@ -114,7 +128,6 @@ actor OctopusAPI {
     func fetchLiveDemand() async throws -> (current: Double, avg: Double, readings: [TelemetryReading]) {
         guard SharedConfig.isConfigured else { throw APIError.notConfigured }
 
-        let token = try await getToken()
         let deviceId = SharedConfig.deviceId
 
         let now = Date()
@@ -132,14 +145,10 @@ actor OctopusAPI {
         }
         """
 
-        let response: GraphQLResponse<TelemetryResponse> = try await execute(query: query, token: token)
+        let response: GraphQLResponse<TelemetryResponse> = try await executeAuthorized(query: query)
         let readings = response.data?.smartMeterTelemetry ?? []
 
-        let current = readings.last?.demandWatts ?? 0
-        let avg = readings.isEmpty ? 0 :
-            readings.reduce(0.0) { $0 + $1.demandWatts } / Double(readings.count)
-
-        return (current: current, avg: avg, readings: readings)
+        return (current: readings.currentDemandWatts, avg: readings.averageDemandWatts, readings: readings)
     }
 
     // MARK: - Today Usage (called infrequently)
@@ -147,7 +156,6 @@ actor OctopusAPI {
     func fetchTodayKWh() async throws -> Double {
         guard SharedConfig.isConfigured else { throw APIError.notConfigured }
 
-        let token = try await getToken()
         let deviceId = SharedConfig.deviceId
 
         let now = Date()
@@ -165,7 +173,7 @@ actor OctopusAPI {
         }
         """
 
-        let response: GraphQLResponse<TelemetryResponse> = try await execute(query: query, token: token)
+        let response: GraphQLResponse<TelemetryResponse> = try await executeAuthorized(query: query)
         let readings = response.data?.smartMeterTelemetry ?? []
         let totalWh = readings.reduce(0.0) { $0 + $1.consumptionWh }
         return totalWh / 1000
@@ -176,7 +184,6 @@ actor OctopusAPI {
     func fetchChartData(range: ChartRange) async throws -> [TelemetryReading] {
         guard SharedConfig.isConfigured else { throw APIError.notConfigured }
 
-        let token = try await getToken()
         let deviceId = SharedConfig.deviceId
 
         let now = Date()
@@ -194,7 +201,7 @@ actor OctopusAPI {
         }
         """
 
-        let response: GraphQLResponse<TelemetryResponse> = try await execute(query: query, token: token)
+        let response: GraphQLResponse<TelemetryResponse> = try await executeAuthorized(query: query)
         return response.data?.smartMeterTelemetry ?? []
     }
 
@@ -203,7 +210,6 @@ actor OctopusAPI {
     func fetchAll(chartRange: ChartRange = .fiveMin) async throws -> LiveData {
         guard SharedConfig.isConfigured else { throw APIError.notConfigured }
 
-        let token = try await getToken()
         let deviceId = SharedConfig.deviceId
 
         let now = Date()
@@ -247,15 +253,14 @@ actor OctopusAPI {
         }
         """
 
-        let response: GraphQLResponse<CombinedTelemetryResponse> = try await execute(query: query, token: token)
+        let response: GraphQLResponse<CombinedTelemetryResponse> = try await executeAuthorized(query: query)
 
         let liveReadings = response.data?.live ?? []
         let todayReadings = response.data?.today ?? []
         let chartReadings = response.data?.chart ?? liveReadings
 
-        let currentDemand = liveReadings.last?.demandWatts ?? 0
-        let avgDemand = liveReadings.isEmpty ? 0 :
-            liveReadings.reduce(0.0) { $0 + $1.demandWatts } / Double(liveReadings.count)
+        let currentDemand = liveReadings.currentDemandWatts
+        let avgDemand = liveReadings.averageDemandWatts
 
         let totalWh = todayReadings.reduce(0.0) { $0 + $1.consumptionWh }
         let totalKwh = totalWh / 1000
@@ -271,6 +276,21 @@ actor OctopusAPI {
     }
 
     // MARK: - Network
+
+    /// Runs an authenticated query. Kraken tokens can be invalidated before our
+    /// local expiry (e.g. API key regenerated, server-side expiry), and a stale
+    /// cached token would otherwise keep failing until the cache ages out — so on
+    /// an API-level error with a cached token, refresh the token and retry once.
+    private func executeAuthorized<T: Decodable>(query: String) async throws -> GraphQLResponse<T> {
+        let hadCachedToken = cachedToken != nil
+        let token = try await getToken()
+        do {
+            return try await execute(query: query, token: token)
+        } catch let error as APIError where hadCachedToken && error.isAuthError {
+            clearTokenCache()
+            return try await execute(query: query, token: try await getToken())
+        }
+    }
 
     private func execute<T: Decodable>(query: String, token: String?) async throws -> GraphQLResponse<T> {
         var request = URLRequest(url: graphqlURL, timeoutInterval: 15)
@@ -320,7 +340,7 @@ actor OctopusAPI {
         }
 
         if let errors = decoded.errors, let first = errors.first {
-            throw APIError.networkError("API: \(first.message)")
+            throw first.isAuthError ? APIError.tokenRejected(first.message) : APIError.apiError(first.message)
         }
 
         return decoded
@@ -332,6 +352,8 @@ actor OctopusAPI {
         case notConfigured
         case authFailed
         case networkError(String)
+        case apiError(String)
+        case tokenRejected(String)
         case rateLimited(retryAfter: String)
         case accountNotFound
         case noSmartDevice
@@ -341,9 +363,26 @@ actor OctopusAPI {
             case .notConfigured: return "Please enter your API key and account number in the app"
             case .authFailed: return "Invalid API key"
             case .networkError(let detail): return detail
+            case .apiError(let message), .tokenRejected(let message): return "Octopus API: \(message)"
             case .rateLimited(let retry): return "Rate limited (retry after: \(retry))"
             case .accountNotFound: return "Account not found"
             case .noSmartDevice: return "No Home Mini found on this account"
+            }
+        }
+
+        var isAuthError: Bool {
+            if case .tokenRejected = self { return true }
+            return false
+        }
+
+        /// Short message for space-constrained surfaces like widgets.
+        var shortDescription: String {
+            switch self {
+            case .notConfigured: return "Open app to set up"
+            case .authFailed, .tokenRejected: return "Sign-in failed — open app"
+            case .rateLimited: return "Rate limited — retrying soon"
+            case .accountNotFound, .noSmartDevice: return "Check settings in app"
+            case .networkError, .apiError: return "Couldn't reach Octopus"
             }
         }
     }

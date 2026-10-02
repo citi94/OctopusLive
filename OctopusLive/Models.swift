@@ -9,6 +9,21 @@ struct GraphQLResponse<T: Decodable>: Decodable {
 
 struct GraphQLError: Decodable {
     let message: String
+    let extensions: Extensions?
+
+    struct Extensions: Decodable {
+        let errorCode: String?
+    }
+
+    /// Kraken signals expired/invalid tokens via GraphQL errors (HTTP 200).
+    var isAuthError: Bool {
+        let code = extensions?.errorCode ?? ""
+        // KT-CT-1111 unauthorized, KT-CT-1124 JWT expired, KT-CT-1143 invalid token
+        if ["KT-CT-1111", "KT-CT-1124", "KT-CT-1143"].contains(code) { return true }
+        let m = message.lowercased()
+        return m.contains("token") || m.contains("jwt") || m.contains("signature")
+            || m.contains("unauthori") || m.contains("authenticat")
+    }
 }
 
 // MARK: - Token
@@ -61,7 +76,7 @@ struct TelemetryResponse: Decodable {
     let smartMeterTelemetry: [TelemetryReading]?
 }
 
-struct TelemetryReading: Decodable, Identifiable {
+struct TelemetryReading: Codable, Identifiable {
     let readAt: String
     // Kraken returns these as null for intervals without a real-time read
     // (e.g. HALF_HOURLY buckets, or gaps when the Home Mini wasn't streaming),
@@ -84,6 +99,32 @@ struct TelemetryReading: Decodable, Identifiable {
     var hasDemand: Bool {
         guard let demand else { return false }
         return Double(demand) != nil
+    }
+
+    /// Value to plot for this interval: the real-time demand when present,
+    /// otherwise the average power implied by the interval's consumption
+    /// (Wh over the bucket length). Coarse groupings like HALF_HOURLY return
+    /// null demand, so without this fallback those charts flatline at 0 W.
+    /// Nil when the interval has neither.
+    func chartWatts(intervalSeconds: TimeInterval) -> Double? {
+        if hasDemand { return demandWatts }
+        guard let delta = consumptionDelta, let wh = Double(delta) else { return nil }
+        return wh * 3600 / intervalSeconds
+    }
+}
+
+extension Array where Element == TelemetryReading {
+    /// Readings that carry a real-time demand value. Null-demand gaps must be
+    /// skipped, not treated as 0 W, or they drag the current/average figures down.
+    var withDemand: [TelemetryReading] { filter(\.hasDemand) }
+
+    /// Most recent real demand reading, in watts.
+    var currentDemandWatts: Double { withDemand.last?.demandWatts ?? 0 }
+
+    /// Mean of the real demand readings, in watts.
+    var averageDemandWatts: Double {
+        let values = withDemand.map(\.demandWatts)
+        return values.isEmpty ? 0 : values.reduce(0, +) / Double(values.count)
     }
 }
 
@@ -117,11 +158,21 @@ enum ChartRange: String, CaseIterable, Identifiable {
         case .twentyFourHours: return "HALF_HOURLY"
         }
     }
+
+    /// Length of one bucket for `grouping`, in seconds.
+    var intervalSeconds: TimeInterval {
+        switch self {
+        case .fiveMin: return 10
+        case .fifteenMin: return 60
+        case .oneHour: return 5 * 60
+        case .sixHours, .twentyFourHours: return 30 * 60
+        }
+    }
 }
 
 // MARK: - Live Data
 
-struct LiveData {
+struct LiveData: Codable {
     let currentDemandWatts: Double
     let averageDemandWatts: Double
     let todayKWh: Double

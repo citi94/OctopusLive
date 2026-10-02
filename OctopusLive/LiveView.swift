@@ -9,6 +9,8 @@ struct LiveView: View {
 
     var isDemo: Bool = false
 
+    @Environment(\.scenePhase) private var scenePhase
+
     @State private var currentWatts: Double = 0
     @State private var avgWatts: Double = 0
     @State private var todayKWh: Double = 0
@@ -36,7 +38,18 @@ struct LiveView: View {
         .onAppear { startPolling() }
         .onDisappear { stopPolling() }
         .onChange(of: chartRange) {
+            chartReadings = []
             fetchChart()
+        }
+        // Timers don't fire in the background, so refresh as soon as the app
+        // returns rather than showing a stale reading for up to a poll interval.
+        .onChange(of: scenePhase) { _, phase in
+            // .active also fires after Control Center etc.; skip if data is fresh.
+            if phase == .active, !isDemo, Date().timeIntervalSince(lastUpdate ?? .distantPast) > 15 {
+                fetchLive()
+                fetchToday()
+                fetchChart()
+            }
         }
     }
 
@@ -161,7 +174,7 @@ struct LiveView: View {
             .pickerStyle(.segmented)
 
             let readings = chartRange == .fiveMin ? liveReadings : chartReadings
-            DemandChart(readings: readings)
+            DemandChart(readings: readings, intervalSeconds: chartRange.intervalSeconds)
                 .frame(height: 180)
         }
         .padding()
@@ -201,6 +214,9 @@ struct LiveView: View {
     // MARK: - Polling
 
     private func startPolling() {
+        // onAppear can fire more than once without a matching onDisappear;
+        // never stack a second set of timers (doubles API calls → rate limits).
+        stopPolling()
         if isDemo {
             loadDemoData()
             liveTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { _ in
@@ -215,16 +231,39 @@ struct LiveView: View {
         }
         todayTimer = Timer.scheduledTimer(withTimeInterval: todayInterval, repeats: true) { _ in
             fetchToday()
+            fetchChart()
         }
     }
 
     private func loadDemoData() {
-        let base = Double.random(in: 800...2500)
-        currentWatts = base + Double.random(in: -200...200)
-        avgWatts = base
-        todayKWh = Double.random(in: 4...12)
+        let now = Date()
+        let fmt = ISO8601DateFormatter()
+        func readings(count: Int, step: TimeInterval, base: Double, jitter: Double) -> [TelemetryReading] {
+            (0..<count).map { i in
+                let t = now.addingTimeInterval(-Double(count - 1 - i) * step)
+                // Gentle wave plus noise so the chart looks like a real household.
+                let w = max(80, base + sin(Double(i) / 4) * base * 0.3 + Double.random(in: -jitter...jitter))
+                return TelemetryReading(
+                    readAt: fmt.string(from: t),
+                    consumptionDelta: String(format: "%.1f", w * step / 3600),
+                    demand: String(format: "%.0f", w)
+                )
+            }
+        }
+
+        let live = readings(count: 30, step: 10, base: 1100, jitter: 250)
+        liveReadings = live
+        // Regenerate the long-range chart only when the range changes (it's
+        // cleared then), not on every 3s demo tick.
+        if chartRange != .fiveMin && chartReadings.isEmpty {
+            let buckets = Int(chartRange.seconds / chartRange.intervalSeconds)
+            chartReadings = readings(count: buckets, step: chartRange.intervalSeconds, base: 700, jitter: 300)
+        }
+        currentWatts = live.currentDemandWatts
+        avgWatts = live.averageDemandWatts
+        todayKWh = 8.4
         hasLiveData = true
-        lastUpdate = Date()
+        lastUpdate = now
     }
 
     private func stopPolling() {
@@ -269,7 +308,8 @@ struct LiveView: View {
     }
 
     private func adjustPolling(interval: TimeInterval) {
-        guard interval != liveInterval else { return }
+        // A fetch can finish after stopPolling(); don't resurrect a timer then.
+        guard interval != liveInterval, liveTimer != nil else { return }
         liveInterval = interval
         liveTimer?.invalidate()
         liveTimer = Timer.scheduledTimer(withTimeInterval: liveInterval, repeats: true) { _ in
@@ -291,11 +331,18 @@ struct LiveView: View {
     }
 
     private func fetchChart() {
-        guard chartRange != .fiveMin else { return }
+        if isDemo {
+            loadDemoData()
+            return
+        }
+        let range = chartRange
+        guard range != .fiveMin else { return }
         Task {
             do {
-                let readings = try await OctopusAPI.shared.fetchChartData(range: chartRange)
+                let readings = try await OctopusAPI.shared.fetchChartData(range: range)
                 await MainActor.run {
+                    // Drop results for a range the user has already switched away from.
+                    guard self.chartRange == range else { return }
                     self.chartReadings = readings
                 }
             } catch {
@@ -309,9 +356,10 @@ struct LiveView: View {
 
 struct DemandChart: View {
     let readings: [TelemetryReading]
+    let intervalSeconds: TimeInterval
 
     var body: some View {
-        let demands = readings.map(\.demandWatts)
+        let demands = readings.compactMap { $0.chartWatts(intervalSeconds: intervalSeconds) }
         let maxD = demands.max() ?? 0
         let minD = demands.min() ?? 0
         let rawRange = maxD - minD
@@ -319,7 +367,7 @@ struct DemandChart: View {
         let scaleMax = maxD + rawRange * 0.1
         let range = max(scaleMax - scaleMin, 100)
 
-        if readings.count > 1 {
+        if demands.count > 1 {
             VStack(spacing: 0) {
                 HStack(alignment: .top, spacing: 4) {
                     VStack {
@@ -336,7 +384,7 @@ struct DemandChart: View {
                     GeometryReader { geo in
                         let w = geo.size.width
                         let h = geo.size.height
-                        let stepX = w / CGFloat(readings.count - 1)
+                        let stepX = w / CGFloat(demands.count - 1)
 
                         ForEach(0..<3) { i in
                             let y = h * CGFloat(i) / 2.0
@@ -348,9 +396,9 @@ struct DemandChart: View {
                         }
 
                         Path { path in
-                            for (i, r) in readings.enumerated() {
+                            for (i, d) in demands.enumerated() {
                                 let x = CGFloat(i) * stepX
-                                let y = h - ((CGFloat(r.demandWatts - scaleMin) / CGFloat(range)) * h)
+                                let y = h - ((CGFloat(d - scaleMin) / CGFloat(range)) * h)
                                 if i == 0 {
                                     path.move(to: CGPoint(x: x, y: h))
                                     path.addLine(to: CGPoint(x: x, y: y))
@@ -358,7 +406,7 @@ struct DemandChart: View {
                                     path.addLine(to: CGPoint(x: x, y: y))
                                 }
                             }
-                            path.addLine(to: CGPoint(x: CGFloat(readings.count - 1) * stepX, y: h))
+                            path.addLine(to: CGPoint(x: CGFloat(demands.count - 1) * stepX, y: h))
                             path.closeSubpath()
                         }
                         .fill(
@@ -370,9 +418,9 @@ struct DemandChart: View {
                         )
 
                         Path { path in
-                            for (i, r) in readings.enumerated() {
+                            for (i, d) in demands.enumerated() {
                                 let x = CGFloat(i) * stepX
-                                let y = h - ((CGFloat(r.demandWatts - scaleMin) / CGFloat(range)) * h)
+                                let y = h - ((CGFloat(d - scaleMin) / CGFloat(range)) * h)
                                 if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
                                 else { path.addLine(to: CGPoint(x: x, y: y)) }
                             }
