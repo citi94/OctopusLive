@@ -459,7 +459,7 @@ struct OctopusWidget: Widget {
         StaticConfiguration(kind: kind, provider: OctopusTimelineProvider()) { entry in
             OctopusWidgetEntryView(entry: entry)
         }
-        .configurationDisplayName("Octopus Live")
+        .configurationDisplayName("Octo Live")
         .description("Live electricity usage from your Octopus Home Mini")
         .supportedFamilies([
             .systemSmall,

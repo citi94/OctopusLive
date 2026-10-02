@@ -63,7 +63,7 @@ struct SettingsView: View {
                 .font(.system(size: 48))
                 .foregroundStyle(.yellow)
 
-            Text("Octopus Live")
+            Text("Octo Live")
                 .font(.title.bold())
                 .foregroundStyle(.white)
 
@@ -208,7 +208,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 8) {
                 instructionRow(number: "1", text: "Go to your home screen and long-press")
                 instructionRow(number: "2", text: "Tap the + button (top left)")
-                instructionRow(number: "3", text: "Search for \"Octopus Live\"")
+                instructionRow(number: "3", text: "Search for \"Octo Live\"")
                 instructionRow(number: "4", text: "Pick a size — small, medium or large")
             }
 

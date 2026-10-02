@@ -33,7 +33,7 @@ struct LiveView: View {
 
             content
         }
-        .navigationTitle("Octopus Live")
+        .navigationTitle("Octo Live")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { startPolling() }
         .onDisappear { stopPolling() }

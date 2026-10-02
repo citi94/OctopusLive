@@ -1,15 +1,15 @@
 # App Store Connect Metadata
 
 ## App Name
-Octopus Live
+Octo Live
 
 ## Subtitle
-Live energy usage widget
+Live home electricity usage
 
 ## Description
 See your home electricity usage in real time, right from your home screen and lock screen.
 
-Octopus Live connects to your Octopus Energy account via their public API and displays live power demand from your Octopus Home Mini smart meter device. View your current usage, track consumption over time, and keep an eye on your daily total.
+Octo Live connects to your Octopus Energy account via their public API and displays live power demand from your Octopus Home Mini smart meter device. View your current usage, track consumption over time, and keep an eye on your daily total.
 
 Features:
 - Live electricity demand in the app, updated every 40 seconds
@@ -28,7 +28,8 @@ Requirements:
 This app is not affiliated with, endorsed by, or connected to Octopus Energy Ltd.
 
 ## Keywords
-energy,electricity,smart meter,octopus,widget,usage,power,home mini,live,monitor
+<!-- No third-party trademarks (Guideline 2.3.7): "octopus" / "home mini" are left out on purpose. -->
+energy,electricity,smart meter,widget,usage,power,live,monitor,kwh,watts,consumption,tracker
 
 ## Category
 Primary: Utilities
@@ -49,7 +50,7 @@ No test account is needed - the demo mode demonstrates all features.
 Select **Data Not Collected**.
 
 Rationale: Apple defines "collect" as transmitting data off the device in a way
-that lets the developer (or the developer's partners) access it. Octopus Live
+that lets the developer (or the developer's partners) access it. Octo Live
 has no server, analytics or SDKs; the API key and account number stay on the
 device and are sent only directly to the user's own energy supplier
 (api.octopus.energy) to fetch their data. The developer never receives anything.
