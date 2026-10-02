@@ -46,11 +46,10 @@ No test account is needed - the demo mode demonstrates all features.
 
 ## App Store Privacy Labels
 
-### Data Linked to You
-- User ID (account number) - App Functionality
+Select **Data Not Collected**.
 
-### Data Not Collected
-- No analytics
-- No advertising
-- No tracking
-- No third-party sharing
+Rationale: Apple defines "collect" as transmitting data off the device in a way
+that lets the developer (or the developer's partners) access it. Octopus Live
+has no server, analytics or SDKs; the API key and account number stay on the
+device and are sent only directly to the user's own energy supplier
+(api.octopus.energy) to fetch their data. The developer never receives anything.
