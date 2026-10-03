@@ -61,19 +61,34 @@ struct SharedConfig {
         set { defaults.set(newValue, forKey: "isDemo") }
     }
 
-    /// Last successful widget fetch, shown (with its timestamp) when a background
-    /// refresh fails, instead of blanking the widget on a flaky connection.
-    static var lastLiveData: LiveData? {
-        get {
-            guard let data = defaults.data(forKey: "lastLiveData") else { return nil }
-            return try? JSONDecoder().decode(LiveData.self, from: data)
-        }
-        set {
-            if let newValue, let data = try? JSONEncoder().encode(newValue) {
-                defaults.set(data, forKey: "lastLiveData")
-            } else {
-                defaults.removeObject(forKey: "lastLiveData")
-            }
+    /// Latest live readings and today's total, shared so the app and widget
+    /// reuse each other's fetches instead of each calling the API.
+    static var liveCache: TimedValue<[TelemetryReading]>? {
+        get { decoded(forKey: "liveCache") }
+        set { encode(newValue, forKey: "liveCache") }
+    }
+
+    static var todayCache: TimedValue<Double>? {
+        get { decoded(forKey: "todayCache") }
+        set { encode(newValue, forKey: "todayCache") }
+    }
+
+    /// Set when Octopus rate-limits us; nothing calls telemetry until then.
+    static var rateLimitedUntil: Date? {
+        get { defaults.object(forKey: "rateLimitedUntil") as? Date }
+        set { defaults.set(newValue, forKey: "rateLimitedUntil") }
+    }
+
+    private static func decoded<T: Decodable>(forKey key: String) -> T? {
+        guard let data = defaults.data(forKey: key) else { return nil }
+        return try? JSONDecoder().decode(T.self, from: data)
+    }
+
+    private static func encode<T: Encodable>(_ value: T?, forKey key: String) {
+        if let value, let data = try? JSONEncoder().encode(value) {
+            defaults.set(data, forKey: key)
+        } else {
+            defaults.removeObject(forKey: key)
         }
     }
 
@@ -96,7 +111,7 @@ struct SharedConfig {
     }
 
     static func deleteAll() {
-        for key in ["apiKey", "accountNumber", "deviceId", "mpan", "meterSerial", "isDemo", "lastLiveData"] {
+        for key in ["apiKey", "accountNumber", "deviceId", "mpan", "meterSerial", "isDemo", "liveCache", "todayCache", "rateLimitedUntil", "lastLiveData"] {
             defaults.removeObject(forKey: key)
         }
         KeychainHelper.deleteAll()

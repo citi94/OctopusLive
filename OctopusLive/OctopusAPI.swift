@@ -13,13 +13,12 @@ actor OctopusAPI {
     // + chart fire together) would each mint a token; share one in-flight fetch.
     private var tokenTask: Task<String, Error>?
 
-    // Rate limit tracking
-    private(set) var lastRateLimitInfo: RateLimitInfo?
+    // Several widget families reload at once; let them share one request.
+    private var liveTask: Task<TimedValue<[TelemetryReading]>, Error>?
+    private var todayTask: Task<Double, Error>?
 
-    struct RateLimitInfo {
-        let headers: [String: String]
-        let timestamp: Date
-    }
+    // Long-range chart data is only used by the app, so it's cached in memory.
+    private var chartCache: [ChartRange: (readings: [TelemetryReading], fetchedAt: Date)] = [:]
 
     // MARK: - Sanitization
 
@@ -123,156 +122,115 @@ actor OctopusAPI {
         throw APIError.noSmartDevice
     }
 
-    // MARK: - Live Demand (lightweight, called frequently)
+    // MARK: - Telemetry
+    //
+    // Octopus limits smartMeterTelemetry to ~125 calls/hour per account (see
+    // `rateLimitInfo`), shared by the app, every widget, and any other tool using
+    // the same account. So every read goes through a cache shared via the app
+    // group: the widget reuses what the app just fetched and vice versa, and a
+    // caller only hits the network when the cached copy is older than it can
+    // tolerate.
 
-    func fetchLiveDemand() async throws -> (current: Double, avg: Double, readings: [TelemetryReading]) {
-        guard SharedConfig.isConfigured else { throw APIError.notConfigured }
+    /// Live demand for the last 5 minutes (TEN_SECONDS buckets).
+    func fetchLiveReadings(maxAge: TimeInterval) async throws -> TimedValue<[TelemetryReading]> {
+        if let cached = SharedConfig.liveCache, cached.age < maxAge {
+            return cached
+        }
+        if let liveTask { return try await liveTask.value }
+        let task = Task {
+            let now = Date()
+            let readings = try await telemetry(grouping: "TEN_SECONDS", start: now.addingTimeInterval(-5 * 60), end: now)
+            let fresh = TimedValue(value: readings, fetchedAt: now)
+            SharedConfig.liveCache = fresh
+            return fresh
+        }
+        liveTask = task
+        defer { liveTask = nil }
+        return try await task.value
+    }
 
-        let deviceId = SharedConfig.deviceId
-
+    /// Energy used since local midnight, in kWh.
+    func fetchTodayKWh(maxAge: TimeInterval) async throws -> Double {
         let now = Date()
+        let midnight = Calendar.current.startOfDay(for: now)
+        if let cached = SharedConfig.todayCache, cached.age < maxAge, cached.fetchedAt >= midnight {
+            return cached.value
+        }
+        if let todayTask { return try await todayTask.value }
+        let task = Task {
+            let readings = try await telemetry(grouping: "HALF_HOURLY", start: midnight, end: now)
+            let kwh = readings.reduce(0.0) { $0 + $1.consumptionWh } / 1000
+            SharedConfig.todayCache = TimedValue(value: kwh, fetchedAt: now)
+            return kwh
+        }
+        todayTask = task
+        defer { todayTask = nil }
+        return try await task.value
+    }
+
+    /// Readings for a longer chart range. Coarse buckets change slowly, so these
+    /// tolerate a much older cache than the live view.
+    func fetchChartData(range: ChartRange, maxAge: TimeInterval) async throws -> [TelemetryReading] {
+        if let cached = chartCache[range], Date().timeIntervalSince(cached.fetchedAt) < maxAge {
+            return cached.readings
+        }
+        let now = Date()
+        let readings = try await telemetry(grouping: range.grouping, start: now.addingTimeInterval(-range.seconds), end: now)
+        chartCache[range] = (readings, now)
+        return readings
+    }
+
+    /// Everything the widget shows. With the app open this is usually served
+    /// entirely from the cache the app keeps warm.
+    func fetchWidgetData(liveMaxAge: TimeInterval) async throws -> LiveData {
+        let live = try await fetchLiveReadings(maxAge: liveMaxAge)
+        let today = (try? await fetchTodayKWh(maxAge: 15 * 60)) ?? SharedConfig.todayCache?.value ?? 0
+        return LiveData(live: live, todayKWh: today)
+    }
+
+    private func telemetry(grouping: String, start: Date, end: Date) async throws -> [TelemetryReading] {
+        guard SharedConfig.isConfigured else { throw APIError.notConfigured }
+        // While Octopus is limiting us, don't call at all: repeatedly breaking a
+        // dynamic limit makes Kraken tighten it further.
+        if let until = SharedConfig.rateLimitedUntil, until > Date() {
+            throw APIError.rateLimited(until: until)
+        }
+
         let fmt = ISO8601DateFormatter()
         fmt.formatOptions = [.withInternetDateTime]
-
         let query = """
         {
             smartMeterTelemetry(
-                deviceId: "\(sanitize(deviceId))",
-                grouping: TEN_SECONDS,
-                start: "\(fmt.string(from: now.addingTimeInterval(-5 * 60)))",
-                end: "\(fmt.string(from: now))"
+                deviceId: "\(sanitize(SharedConfig.deviceId))",
+                grouping: \(grouping),
+                start: "\(fmt.string(from: start))",
+                end: "\(fmt.string(from: end))"
             ) { readAt consumptionDelta demand }
         }
         """
 
-        let response: GraphQLResponse<TelemetryResponse> = try await executeAuthorized(query: query)
-        let readings = response.data?.smartMeterTelemetry ?? []
-
-        return (current: readings.currentDemandWatts, avg: readings.averageDemandWatts, readings: readings)
+        do {
+            let response: GraphQLResponse<TelemetryResponse> = try await executeAuthorized(query: query)
+            return response.data?.smartMeterTelemetry ?? []
+        } catch APIError.rateLimited {
+            let until = await telemetryLimitReset()
+            SharedConfig.rateLimitedUntil = until
+            throw APIError.rateLimited(until: until)
+        }
     }
 
-    // MARK: - Today Usage (called infrequently)
-
-    func fetchTodayKWh() async throws -> Double {
-        guard SharedConfig.isConfigured else { throw APIError.notConfigured }
-
-        let deviceId = SharedConfig.deviceId
-
-        let now = Date()
-        let fmt = ISO8601DateFormatter()
-        fmt.formatOptions = [.withInternetDateTime]
-
-        let query = """
-        {
-            smartMeterTelemetry(
-                deviceId: "\(sanitize(deviceId))",
-                grouping: HALF_HOURLY,
-                start: "\(fmt.string(from: Calendar.current.startOfDay(for: now)))",
-                end: "\(fmt.string(from: now))"
-            ) { readAt consumptionDelta demand }
-        }
-        """
-
-        let response: GraphQLResponse<TelemetryResponse> = try await executeAuthorized(query: query)
-        let readings = response.data?.smartMeterTelemetry ?? []
-        let totalWh = readings.reduce(0.0) { $0 + $1.consumptionWh }
-        return totalWh / 1000
-    }
-
-    // MARK: - Chart Data (called on range change)
-
-    func fetchChartData(range: ChartRange) async throws -> [TelemetryReading] {
-        guard SharedConfig.isConfigured else { throw APIError.notConfigured }
-
-        let deviceId = SharedConfig.deviceId
-
-        let now = Date()
-        let fmt = ISO8601DateFormatter()
-        fmt.formatOptions = [.withInternetDateTime]
-
-        let query = """
-        {
-            smartMeterTelemetry(
-                deviceId: "\(sanitize(deviceId))",
-                grouping: \(range.grouping),
-                start: "\(fmt.string(from: now.addingTimeInterval(-range.seconds)))",
-                end: "\(fmt.string(from: now))"
-            ) { readAt consumptionDelta demand }
-        }
-        """
-
-        let response: GraphQLResponse<TelemetryResponse> = try await executeAuthorized(query: query)
-        return response.data?.smartMeterTelemetry ?? []
-    }
-
-    // MARK: - Combined fetch for widget (single request, aliases)
-
-    func fetchAll(chartRange: ChartRange = .fiveMin) async throws -> LiveData {
-        guard SharedConfig.isConfigured else { throw APIError.notConfigured }
-
-        let deviceId = SharedConfig.deviceId
-
-        let now = Date()
-        let fmt = ISO8601DateFormatter()
-        fmt.formatOptions = [.withInternetDateTime]
-
-        let isoNow = fmt.string(from: now)
-        let isoFiveMin = fmt.string(from: now.addingTimeInterval(-5 * 60))
-        let isoStartOfDay = fmt.string(from: Calendar.current.startOfDay(for: now))
-
-        let chartAlias: String
-        if chartRange == .fiveMin {
-            chartAlias = ""
-        } else {
-            let isoChartStart = fmt.string(from: now.addingTimeInterval(-chartRange.seconds))
-            chartAlias = """
-                chart: smartMeterTelemetry(
-                    deviceId: "\(sanitize(deviceId))",
-                    grouping: \(chartRange.grouping),
-                    start: "\(isoChartStart)",
-                    end: "\(isoNow)"
-                ) { readAt consumptionDelta demand }
-            """
-        }
-
-        let query = """
-        {
-            live: smartMeterTelemetry(
-                deviceId: "\(sanitize(deviceId))",
-                grouping: TEN_SECONDS,
-                start: "\(isoFiveMin)",
-                end: "\(isoNow)"
-            ) { readAt consumptionDelta demand }
-            today: smartMeterTelemetry(
-                deviceId: "\(sanitize(deviceId))",
-                grouping: HALF_HOURLY,
-                start: "\(isoStartOfDay)",
-                end: "\(isoNow)"
-            ) { readAt consumptionDelta demand }
-            \(chartAlias)
-        }
-        """
-
-        let response: GraphQLResponse<CombinedTelemetryResponse> = try await executeAuthorized(query: query)
-
-        let liveReadings = response.data?.live ?? []
-        let todayReadings = response.data?.today ?? []
-        let chartReadings = response.data?.chart ?? liveReadings
-
-        let currentDemand = liveReadings.currentDemandWatts
-        let avgDemand = liveReadings.averageDemandWatts
-
-        let totalWh = todayReadings.reduce(0.0) { $0 + $1.consumptionWh }
-        let totalKwh = totalWh / 1000
-
-        return LiveData(
-            currentDemandWatts: currentDemand,
-            averageDemandWatts: avgDemand,
-            todayKWh: totalKwh,
-            readings: liveReadings,
-            chartReadings: chartReadings,
-            timestamp: now
-        )
+    /// When the smartMeterTelemetry limit window resets, per Kraken's
+    /// `rateLimitInfo` (costs points, not telemetry calls). Falls back to 15
+    /// minutes, and never pauses longer than an hour.
+    private func telemetryLimitReset() async -> Date {
+        let fallback = Date().addingTimeInterval(15 * 60)
+        let query = "{ rateLimitInfo { fieldSpecificRateLimits(first: 50) { edges { node { field ttl } } } } }"
+        guard let response: GraphQLResponse<RateLimitInfoResponse> = try? await executeAuthorized(query: query),
+              let ttl = response.data?.rateLimitInfo.fieldSpecificRateLimits.edges
+                .first(where: { $0.node.field == "Query.smartMeterTelemetry" })?.node.ttl
+        else { return fallback }
+        let reset = Date(timeIntervalSince1970: TimeInterval(ttl))
+        return min(max(reset, Date().addingTimeInterval(60)), Date().addingTimeInterval(60 * 60))
     }
 
     // MARK: - Network
@@ -309,21 +267,8 @@ actor OctopusAPI {
             throw APIError.networkError("No HTTP response")
         }
 
-        // Capture rate limit headers
-        var rateLimitHeaders: [String: String] = [:]
-        for (key, value) in http.allHeaderFields {
-            let k = "\(key)".lowercased()
-            if k.contains("rate") || k.contains("limit") || k.contains("retry") || k.contains("throttle") {
-                rateLimitHeaders["\(key)"] = "\(value)"
-            }
-        }
-        if !rateLimitHeaders.isEmpty || http.statusCode == 429 {
-            lastRateLimitInfo = RateLimitInfo(headers: rateLimitHeaders, timestamp: Date())
-        }
-
         guard http.statusCode != 429 else {
-            let retryAfter = http.value(forHTTPHeaderField: "Retry-After") ?? "unknown"
-            throw APIError.rateLimited(retryAfter: retryAfter)
+            throw APIError.rateLimited(until: Date().addingTimeInterval(15 * 60))
         }
 
         guard (200...299).contains(http.statusCode) else {
@@ -340,6 +285,10 @@ actor OctopusAPI {
         }
 
         if let errors = decoded.errors, let first = errors.first {
+            // Kraken reports rate limiting as a GraphQL error on an HTTP 200.
+            if first.extensions?.errorCode == "KT-CT-1199" {
+                throw APIError.rateLimited(until: Date().addingTimeInterval(15 * 60))
+            }
             throw first.isAuthError ? APIError.tokenRejected(first.message) : APIError.apiError(first.message)
         }
 
@@ -354,7 +303,7 @@ actor OctopusAPI {
         case networkError(String)
         case apiError(String)
         case tokenRejected(String)
-        case rateLimited(retryAfter: String)
+        case rateLimited(until: Date)
         case accountNotFound
         case noSmartDevice
 
@@ -364,7 +313,8 @@ actor OctopusAPI {
             case .authFailed: return "Invalid API key"
             case .networkError(let detail): return detail
             case .apiError(let message), .tokenRejected(let message): return "Octopus API: \(message)"
-            case .rateLimited(let retry): return "Rate limited (retry after: \(retry))"
+            case .rateLimited(let until):
+                return "Octopus is limiting requests — resuming at \(until.formatted(date: .omitted, time: .shortened))"
             case .accountNotFound: return "Account not found"
             case .noSmartDevice: return "No Home Mini found on this account"
             }
@@ -380,7 +330,7 @@ actor OctopusAPI {
             switch self {
             case .notConfigured: return "Open app to set up"
             case .authFailed, .tokenRejected: return "Sign-in failed — open app"
-            case .rateLimited: return "Rate limited — retrying soon"
+            case .rateLimited: return "Octopus limit — retrying soon"
             case .accountNotFound, .noSmartDevice: return "Check settings in app"
             case .networkError, .apiError: return "Couldn't reach Octopus"
             }

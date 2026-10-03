@@ -317,6 +317,10 @@ struct SettingsView: View {
                 SharedConfig.deviceId = result.deviceId
                 SharedConfig.mpan = result.mpan
                 SharedConfig.meterSerial = result.serial
+                // Cached readings belong to the previous account/device.
+                SharedConfig.liveCache = nil
+                SharedConfig.todayCache = nil
+                SharedConfig.rateLimitedUntil = nil
 
                 await OctopusAPI.shared.clearTokenCache()
                 WidgetCenter.shared.reloadAllTimelines()

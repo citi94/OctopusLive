@@ -18,9 +18,10 @@ struct OctopusTimelineProvider: TimelineProvider {
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<OctopusEntry>) -> Void) {
         fetchEntry { entry in
-            let nextUpdate = Calendar.current.date(byAdding: .minute, value: 5, to: Date()) ?? Date().addingTimeInterval(300)
-            let timeline = Timeline(entries: [entry], policy: .after(nextUpdate))
-            completion(timeline)
+            // iOS budgets widget reloads to roughly every 15 minutes anyway;
+            // asking for more just spends Octopus calls that may be refused.
+            let nextUpdate = Date().addingTimeInterval(15 * 60)
+            completion(Timeline(entries: [entry], policy: .after(nextUpdate)))
         }
     }
 
@@ -36,9 +37,9 @@ struct OctopusTimelineProvider: TimelineProvider {
 
         Task {
             do {
-                let data = try await OctopusAPI.shared.fetchAll()
+                // Reuses the app's (or another widget's) fetch if it's under 2 minutes old.
+                let data = try await OctopusAPI.shared.fetchWidgetData(liveMaxAge: 2 * 60)
                 if data.hasLiveData {
-                    SharedConfig.lastLiveData = data
                     completion(OctopusEntry(date: Date(), data: data, error: nil))
                 } else {
                     // Authenticated, but the Home Mini isn't streaming real-time
@@ -48,9 +49,9 @@ struct OctopusTimelineProvider: TimelineProvider {
             } catch {
                 // Keep showing the last good reading (its timestamp shows its age)
                 // for a while rather than blanking the widget on a transient failure.
-                if let cached = SharedConfig.lastLiveData,
-                   Date().timeIntervalSince(cached.timestamp) < 2 * 60 * 60 {
-                    completion(OctopusEntry(date: Date(), data: cached, error: nil))
+                if let cached = SharedConfig.liveCache, cached.age < 2 * 60 * 60,
+                   cached.value.contains(where: \.hasDemand) {
+                    completion(OctopusEntry(date: Date(), data: LiveData(live: cached, todayKWh: SharedConfig.todayCache?.value ?? 0), error: nil))
                 } else {
                     let message = (error as? OctopusAPI.APIError)?.shortDescription ?? "Couldn't reach Octopus"
                     completion(OctopusEntry(date: Date(), data: nil, error: message))

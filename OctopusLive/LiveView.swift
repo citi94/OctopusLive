@@ -21,10 +21,16 @@ struct LiveView: View {
     @State private var hasLiveData = false
     @State private var consecutiveFailures = 0
     @State private var error: String?
+    @State private var rateLimitedUntil: Date?
     @State private var liveTimer: Timer?
-    @State private var todayTimer: Timer?
-    @State private var liveInterval: TimeInterval = 40
-    private let todayInterval: TimeInterval = 300
+    @State private var slowTimer: Timer?
+
+    // Octopus allows ~125 telemetry calls/hour per account, shared with the
+    // widget. Live every 45s (80/h) + today every 15 min + a long-range chart
+    // every 5–15 min keeps the app under ~100/h; the widget reuses the app's
+    // cache while it's open.
+    private let liveInterval: TimeInterval = 45
+    private let slowInterval: TimeInterval = 5 * 60
 
     var body: some View {
         ZStack {
@@ -41,11 +47,10 @@ struct LiveView: View {
             chartReadings = []
             fetchChart()
         }
-        // Timers don't fire in the background, so refresh as soon as the app
-        // returns rather than showing a stale reading for up to a poll interval.
+        // Timers don't fire in the background, so refresh on return. Each fetch
+        // is cache-aware, so this only hits the API for data that's actually stale.
         .onChange(of: scenePhase) { _, phase in
-            // .active also fires after Control Center etc.; skip if data is fresh.
-            if phase == .active, !isDemo, Date().timeIntervalSince(lastUpdate ?? .distantPast) > 15 {
+            if phase == .active, !isDemo {
                 fetchLive()
                 fetchToday()
                 fetchChart()
@@ -203,6 +208,12 @@ struct LiveView: View {
 
     private var updatedLabel: some View {
         Group {
+            if let rateLimitedUntil, rateLimitedUntil > Date() {
+                Label("Octopus is limiting requests — showing the last reading until \(rateLimitedUntil.formatted(date: .omitted, time: .shortened))", systemImage: "hourglass")
+                    .font(.caption2)
+                    .foregroundStyle(.yellow.opacity(0.8))
+                    .multilineTextAlignment(.center)
+            }
             if let lastUpdate {
                 Text("Updated \(Self.timeFormatter.string(from: lastUpdate))")
                     .font(.caption2)
@@ -224,12 +235,20 @@ struct LiveView: View {
             }
             return
         }
+        // Show whatever the app or widget fetched last straight away.
+        if let cached = SharedConfig.liveCache {
+            apply(cached)
+        }
+        if let today = SharedConfig.todayCache {
+            todayKWh = today.value
+        }
         fetchLive()
         fetchToday()
+        fetchChart()
         liveTimer = Timer.scheduledTimer(withTimeInterval: liveInterval, repeats: true) { _ in
             fetchLive()
         }
-        todayTimer = Timer.scheduledTimer(withTimeInterval: todayInterval, repeats: true) { _ in
+        slowTimer = Timer.scheduledTimer(withTimeInterval: slowInterval, repeats: true) { _ in
             fetchToday()
             fetchChart()
         }
@@ -269,35 +288,32 @@ struct LiveView: View {
     private func stopPolling() {
         liveTimer?.invalidate()
         liveTimer = nil
-        todayTimer?.invalidate()
-        todayTimer = nil
+        slowTimer?.invalidate()
+        slowTimer = nil
+    }
+
+    private func apply(_ live: TimedValue<[TelemetryReading]>) {
+        currentWatts = live.value.currentDemandWatts
+        avgWatts = live.value.averageDemandWatts
+        liveReadings = live.value
+        hasLiveData = live.value.contains { $0.hasDemand }
+        lastUpdate = live.fetchedAt
     }
 
     private func fetchLive() {
         Task {
             do {
-                let result = try await OctopusAPI.shared.fetchLiveDemand()
+                // A little under the poll interval, so a fresh widget fetch is reused.
+                let live = try await OctopusAPI.shared.fetchLiveReadings(maxAge: 30)
                 await MainActor.run {
-                    self.currentWatts = result.current
-                    self.avgWatts = result.avg
-                    self.liveReadings = result.readings
-                    self.hasLiveData = result.readings.contains { $0.hasDemand }
-                    self.lastUpdate = Date()
+                    apply(live)
                     self.error = nil
                     self.consecutiveFailures = 0
-                    if liveInterval > 40 {
-                        adjustPolling(interval: max(40, liveInterval - 10))
-                    }
+                    self.rateLimitedUntil = nil
                 }
-            } catch let apiError as OctopusAPI.APIError {
-                await MainActor.run {
-                    if case .rateLimited = apiError {
-                        adjustPolling(interval: min(120, liveInterval + 30))
-                    } else {
-                        self.consecutiveFailures += 1
-                        self.error = apiError.localizedDescription
-                    }
-                }
+            } catch OctopusAPI.APIError.rateLimited(let until) {
+                // Not a failure: keep showing the last reading and say why.
+                await MainActor.run { self.rateLimitedUntil = until }
             } catch {
                 await MainActor.run {
                     self.consecutiveFailures += 1
@@ -307,20 +323,10 @@ struct LiveView: View {
         }
     }
 
-    private func adjustPolling(interval: TimeInterval) {
-        // A fetch can finish after stopPolling(); don't resurrect a timer then.
-        guard interval != liveInterval, liveTimer != nil else { return }
-        liveInterval = interval
-        liveTimer?.invalidate()
-        liveTimer = Timer.scheduledTimer(withTimeInterval: liveInterval, repeats: true) { _ in
-            fetchLive()
-        }
-    }
-
     private func fetchToday() {
         Task {
             do {
-                let kwh = try await OctopusAPI.shared.fetchTodayKWh()
+                let kwh = try await OctopusAPI.shared.fetchTodayKWh(maxAge: 15 * 60)
                 await MainActor.run {
                     self.todayKWh = kwh
                 }
@@ -339,7 +345,7 @@ struct LiveView: View {
         guard range != .fiveMin else { return }
         Task {
             do {
-                let readings = try await OctopusAPI.shared.fetchChartData(range: range)
+                let readings = try await OctopusAPI.shared.fetchChartData(range: range, maxAge: range.maxCacheAge)
                 await MainActor.run {
                     // Drop results for a range the user has already switched away from.
                     guard self.chartRange == range else { return }

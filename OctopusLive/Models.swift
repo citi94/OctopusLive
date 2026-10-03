@@ -128,9 +128,39 @@ extension Array where Element == TelemetryReading {
     }
 }
 
+// MARK: - Rate Limit Info
+
+struct RateLimitInfoResponse: Decodable {
+    let rateLimitInfo: Info
+
+    struct Info: Decodable {
+        let fieldSpecificRateLimits: Connection
+    }
+    struct Connection: Decodable {
+        let edges: [Edge]
+    }
+    struct Edge: Decodable {
+        let node: Node
+    }
+    struct Node: Decodable {
+        let field: String
+        /// Unix timestamp at which the current window resets.
+        let ttl: Int
+    }
+}
+
+// MARK: - Cache
+
+struct TimedValue<T: Codable>: Codable {
+    let value: T
+    let fetchedAt: Date
+
+    var age: TimeInterval { Date().timeIntervalSince(fetchedAt) }
+}
+
 // MARK: - Chart Time Range
 
-enum ChartRange: String, CaseIterable, Identifiable {
+enum ChartRange: String, CaseIterable, Identifiable, Hashable {
     case fiveMin = "5m"
     case fifteenMin = "15m"
     case oneHour = "1h"
@@ -159,6 +189,15 @@ enum ChartRange: String, CaseIterable, Identifiable {
         }
     }
 
+    /// How stale a cached copy of this range may be before refetching.
+    var maxCacheAge: TimeInterval {
+        switch self {
+        case .fiveMin: return 0
+        case .fifteenMin, .oneHour: return 5 * 60
+        case .sixHours, .twentyFourHours: return 15 * 60
+        }
+    }
+
     /// Length of one bucket for `grouping`, in seconds.
     var intervalSeconds: TimeInterval {
         switch self {
@@ -179,6 +218,27 @@ struct LiveData: Codable {
     let readings: [TelemetryReading]
     let chartReadings: [TelemetryReading]
     let timestamp: Date
+
+    init(currentDemandWatts: Double, averageDemandWatts: Double, todayKWh: Double,
+         readings: [TelemetryReading], chartReadings: [TelemetryReading], timestamp: Date) {
+        self.currentDemandWatts = currentDemandWatts
+        self.averageDemandWatts = averageDemandWatts
+        self.todayKWh = todayKWh
+        self.readings = readings
+        self.chartReadings = chartReadings
+        self.timestamp = timestamp
+    }
+
+    init(live: TimedValue<[TelemetryReading]>, todayKWh: Double) {
+        self.init(
+            currentDemandWatts: live.value.currentDemandWatts,
+            averageDemandWatts: live.value.averageDemandWatts,
+            todayKWh: todayKWh,
+            readings: live.value,
+            chartReadings: live.value,
+            timestamp: live.fetchedAt
+        )
+    }
 
     /// True when the live window actually contains real-time demand readings.
     /// Distinguishes "Home Mini streaming" from "connected but no data yet".
