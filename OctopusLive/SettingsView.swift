@@ -321,6 +321,7 @@ struct SettingsView: View {
                 SharedConfig.liveCache = nil
                 SharedConfig.todayCache = nil
                 SharedConfig.rateLimitedUntil = nil
+                await OctopusAPI.shared.clearHistory()
 
                 await OctopusAPI.shared.clearTokenCache()
                 WidgetCenter.shared.reloadAllTimelines()
@@ -342,6 +343,7 @@ struct SettingsView: View {
 
     private func deleteAllData() {
         SharedConfig.deleteAll()
+        Task { await OctopusAPI.shared.clearHistory() }
         WidgetCenter.shared.reloadAllTimelines()
         apiKey = ""
         accountNumber = ""

@@ -17,8 +17,10 @@ actor OctopusAPI {
     private var liveTask: Task<TimedValue<[TelemetryReading]>, Error>?
     private var todayTask: Task<Double, Error>?
 
-    // Long-range chart data is only used by the app, so it's cached in memory.
-    private var chartCache: [ChartRange: (readings: [TelemetryReading], fetchedAt: Date)] = [:]
+    // Chart history (app only), loaded from disk on first use.
+    private var histories: [HistoryKind: TelemetryHistory] = [:]
+    // Launch fires several chart refreshes at once; one gap fill per history.
+    private var fills: [HistoryKind: Task<Void, Error>] = [:]
 
     // MARK: - Sanitization
 
@@ -168,16 +170,71 @@ actor OctopusAPI {
         return try await task.value
     }
 
-    /// Readings for a longer chart range. Coarse buckets change slowly, so these
-    /// tolerate a much older cache than the live view.
-    func fetchChartData(range: ChartRange, maxAge: TimeInterval) async throws -> [TelemetryReading] {
-        if let cached = chartCache[range], Date().timeIntervalSince(cached.fetchedAt) < maxAge {
-            return cached.readings
-        }
+    /// Chart data for `range`, drawn from the local history. Hits the network
+    /// only for spans the history doesn't have yet — normally nothing, since
+    /// the live poll keeps the 10-second history current.
+    func chartSeries(range: ChartRange) async throws -> ChartSeries {
+        let kind = range.history
         let now = Date()
-        let readings = try await telemetry(grouping: range.grouping, start: now.addingTimeInterval(-range.seconds), end: now)
-        chartCache[range] = (readings, now)
-        return readings
+        let start = now.addingTimeInterval(-range.seconds)
+        if let fill = fills[kind] {
+            try await fill.value
+        } else if let gap = loadHistory(kind).missingSpan(start: start, now: now) {
+            let fill = Task {
+                let readings = try await telemetry(grouping: kind.grouping, start: gap.from, end: gap.to)
+                var history = loadHistory(kind)
+                history.merge(readings, from: gap.from, to: gap.to)
+                saveHistory(history)
+            }
+            fills[kind] = fill
+            defer { fills[kind] = nil }
+            try await fill.value
+        }
+        return loadHistory(kind).series(start: start, end: Date())
+    }
+
+    /// Feed live-poll readings (last 5 minutes, 10-second buckets) into the
+    /// chart history, so short and medium ranges never need their own call.
+    func recordLive(_ live: TimedValue<[TelemetryReading]>) {
+        var history = loadHistory(.fine)
+        history.merge(live.value, from: live.fetchedAt.addingTimeInterval(-5 * 60), to: live.fetchedAt)
+        saveHistory(history)
+    }
+
+    private static var historyDirectory: URL? {
+        FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: SharedConfig.appGroup)?
+            .appendingPathComponent("Library/Caches", isDirectory: true)
+    }
+
+    private func loadHistory(_ kind: HistoryKind) -> TelemetryHistory {
+        if let history = histories[kind] { return history }
+        var history = TelemetryHistory(kind: kind)
+        if let url = Self.historyDirectory?.appendingPathComponent("history-\(kind.rawValue).json"),
+           let data = try? Data(contentsOf: url),
+           let saved = try? JSONDecoder().decode(TelemetryHistory.self, from: data) {
+            history = saved
+        }
+        histories[kind] = history
+        return history
+    }
+
+    private func saveHistory(_ history: TelemetryHistory) {
+        histories[history.kind] = history
+        guard let dir = Self.historyDirectory,
+              let data = try? JSONEncoder().encode(history) else { return }
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? data.write(to: dir.appendingPathComponent("history-\(history.kind.rawValue).json"), options: .atomic)
+    }
+
+    /// Drop the chart history (it belongs to the current account's device).
+    func clearHistory() {
+        histories = [:]
+        for kind in [HistoryKind.fine, .minute] {
+            if let url = Self.historyDirectory?.appendingPathComponent("history-\(kind.rawValue).json") {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
     }
 
     /// Everything the widget shows. With the app open this is usually served

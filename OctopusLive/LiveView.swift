@@ -15,7 +15,7 @@ struct LiveView: View {
     @State private var avgWatts: Double = 0
     @State private var todayKWh: Double = 0
     @State private var liveReadings: [TelemetryReading] = []
-    @State private var chartReadings: [TelemetryReading] = []
+    @State private var chartSeries: ChartSeries?
     @State private var chartRange: ChartRange = .fiveMin
     @State private var lastUpdate: Date?
     @State private var hasLiveData = false
@@ -44,7 +44,7 @@ struct LiveView: View {
         .onAppear { startPolling() }
         .onDisappear { stopPolling() }
         .onChange(of: chartRange) {
-            chartReadings = []
+            chartSeries = nil
             fetchChart()
         }
         // Timers don't fire in the background, so refresh on return. Each fetch
@@ -178,13 +178,21 @@ struct LiveView: View {
             }
             .pickerStyle(.segmented)
 
-            let readings = chartRange == .fiveMin ? liveReadings : chartReadings
-            DemandChart(readings: readings, intervalSeconds: chartRange.intervalSeconds)
+            DemandChart(series: chartRange == .fiveMin ? liveSeries : chartSeries)
                 .frame(height: 180)
         }
         .padding()
         .background(Color.white.opacity(0.05))
         .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+
+    private var liveSeries: ChartSeries? {
+        guard let end = lastUpdate else { return nil }
+        let points = liveReadings.compactMap { reading -> ChartPoint? in
+            guard reading.hasDemand, let date = parseReadAt(reading.readAt) else { return nil }
+            return ChartPoint(date: date, watts: reading.demandWatts)
+        }
+        return ChartSeries(points: points, start: end.addingTimeInterval(-5 * 60), end: end, bucket: 10)
     }
 
     // MARK: - Today
@@ -274,9 +282,11 @@ struct LiveView: View {
         liveReadings = live
         // Regenerate the long-range chart only when the range changes (it's
         // cleared then), not on every 3s demo tick.
-        if chartRange != .fiveMin && chartReadings.isEmpty {
-            let buckets = Int(chartRange.seconds / chartRange.intervalSeconds)
-            chartReadings = readings(count: buckets, step: chartRange.intervalSeconds, base: 700, jitter: 300)
+        if chartRange != .fiveMin && chartSeries == nil {
+            let bucket = chartRange.history.bucket
+            let points = readings(count: Int(chartRange.seconds / bucket), step: bucket, base: 700, jitter: 300)
+                .compactMap { r in parseReadAt(r.readAt).map { ChartPoint(date: $0, watts: r.demandWatts) } }
+            chartSeries = ChartSeries(points: points, start: now.addingTimeInterval(-chartRange.seconds), end: now, bucket: bucket)
         }
         currentWatts = live.currentDemandWatts
         avgWatts = live.averageDemandWatts
@@ -305,11 +315,14 @@ struct LiveView: View {
             do {
                 // A little under the poll interval, so a fresh widget fetch is reused.
                 let live = try await OctopusAPI.shared.fetchLiveReadings(maxAge: 30)
+                await OctopusAPI.shared.recordLive(live)
                 await MainActor.run {
                     apply(live)
                     self.error = nil
                     self.consecutiveFailures = 0
                     self.rateLimitedUntil = nil
+                    // Redraw longer ranges from the history the poll just extended.
+                    fetchChart()
                 }
             } catch OctopusAPI.APIError.rateLimited(let until) {
                 // Not a failure: keep showing the last reading and say why.
@@ -345,11 +358,11 @@ struct LiveView: View {
         guard range != .fiveMin else { return }
         Task {
             do {
-                let readings = try await OctopusAPI.shared.fetchChartData(range: range, maxAge: range.maxCacheAge)
+                let series = try await OctopusAPI.shared.chartSeries(range: range)
                 await MainActor.run {
                     // Drop results for a range the user has already switched away from.
                     guard self.chartRange == range else { return }
-                    self.chartReadings = readings
+                    self.chartSeries = series
                 }
             } catch {
                 // Non-critical
@@ -361,19 +374,18 @@ struct LiveView: View {
 // MARK: - Demand Chart
 
 struct DemandChart: View {
-    let readings: [TelemetryReading]
-    let intervalSeconds: TimeInterval
+    let series: ChartSeries?
 
     var body: some View {
-        let demands = readings.compactMap { $0.chartWatts(intervalSeconds: intervalSeconds) }
-        let maxD = demands.max() ?? 0
-        let minD = demands.min() ?? 0
-        let rawRange = maxD - minD
-        let scaleMin = max(0, minD - rawRange * 0.1)
-        let scaleMax = maxD + rawRange * 0.1
-        let range = max(scaleMax - scaleMin, 100)
+        if let series, series.points.count > 1 {
+            let demands = series.points.map(\.watts)
+            let maxD = demands.max() ?? 0
+            let minD = demands.min() ?? 0
+            let rawRange = maxD - minD
+            let scaleMin = max(0, minD - rawRange * 0.1)
+            let scaleMax = maxD + rawRange * 0.1
+            let range = max(scaleMax - scaleMin, 100)
 
-        if demands.count > 1 {
             VStack(spacing: 0) {
                 HStack(alignment: .top, spacing: 4) {
                     VStack {
@@ -390,7 +402,9 @@ struct DemandChart: View {
                     GeometryReader { geo in
                         let w = geo.size.width
                         let h = geo.size.height
-                        let stepX = w / CGFloat(demands.count - 1)
+                        let segments = Self.segments(series, width: w) { watts in
+                            h - CGFloat((watts - scaleMin) / range) * h
+                        }
 
                         ForEach(0..<3) { i in
                             let y = h * CGFloat(i) / 2.0
@@ -402,18 +416,12 @@ struct DemandChart: View {
                         }
 
                         Path { path in
-                            for (i, d) in demands.enumerated() {
-                                let x = CGFloat(i) * stepX
-                                let y = h - ((CGFloat(d - scaleMin) / CGFloat(range)) * h)
-                                if i == 0 {
-                                    path.move(to: CGPoint(x: x, y: h))
-                                    path.addLine(to: CGPoint(x: x, y: y))
-                                } else {
-                                    path.addLine(to: CGPoint(x: x, y: y))
-                                }
+                            for segment in segments where segment.count > 1 {
+                                path.move(to: CGPoint(x: segment[0].x, y: h))
+                                segment.forEach { path.addLine(to: $0) }
+                                path.addLine(to: CGPoint(x: segment[segment.count - 1].x, y: h))
+                                path.closeSubpath()
                             }
-                            path.addLine(to: CGPoint(x: CGFloat(demands.count - 1) * stepX, y: h))
-                            path.closeSubpath()
                         }
                         .fill(
                             LinearGradient(
@@ -424,16 +432,15 @@ struct DemandChart: View {
                         )
 
                         Path { path in
-                            for (i, d) in demands.enumerated() {
-                                let x = CGFloat(i) * stepX
-                                let y = h - ((CGFloat(d - scaleMin) / CGFloat(range)) * h)
-                                if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
-                                else { path.addLine(to: CGPoint(x: x, y: y)) }
+                            for segment in segments {
+                                guard let first = segment.first else { continue }
+                                path.move(to: first)
+                                segment.dropFirst().forEach { path.addLine(to: $0) }
                             }
                         }
                         .stroke(
                             LinearGradient(colors: [.green, .yellow, .orange, .red], startPoint: .bottom, endPoint: .top),
-                            style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round)
+                            style: StrokeStyle(lineWidth: series.points.count > 120 ? 1.25 : 2, lineCap: .round, lineJoin: .round)
                         )
                     }
                 }
@@ -445,6 +452,55 @@ struct DemandChart: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    /// Screen points for the line, split wherever the data has a gap. Dense data
+    /// is reduced to the lowest and highest reading per pixel column (in time
+    /// order), so zooming out shrinks the detail rather than averaging it away —
+    /// a 2-minute kettle spike still shows on the 24h chart.
+    static func segments(_ series: ChartSeries, width: CGFloat, y: (Double) -> CGFloat) -> [[CGPoint]] {
+        let span = series.end.timeIntervalSince(series.start)
+        guard span > 0, width > 0 else { return [] }
+        func x(_ date: Date) -> CGFloat { CGFloat(date.timeIntervalSince(series.start) / span) * width }
+        let gap = series.bucket * 4
+
+        var segments: [[CGPoint]] = []
+        var current: [CGPoint] = []
+        var column = -1
+        var low: ChartPoint?
+        var high: ChartPoint?
+        var previous: Date?
+
+        func flush() {
+            guard let low, let high else { return }
+            let ordered = low.date <= high.date ? [low, high] : [high, low]
+            for p in ordered where current.last?.x != x(p.date) || current.last?.y != y(p.watts) {
+                current.append(CGPoint(x: x(p.date), y: y(p.watts)))
+            }
+        }
+
+        for point in series.points {
+            if let previous, point.date.timeIntervalSince(previous) > gap {
+                flush(); low = nil; high = nil
+                if !current.isEmpty { segments.append(current) }
+                current = []
+                column = -1
+            }
+            previous = point.date
+            let col = Int(x(point.date).rounded(.down))
+            if col != column {
+                flush()
+                column = col
+                low = point
+                high = point
+            } else {
+                if point.watts < low!.watts { low = point }
+                if point.watts > high!.watts { high = point }
+            }
+        }
+        flush()
+        if !current.isEmpty { segments.append(current) }
+        return segments
     }
 }
 

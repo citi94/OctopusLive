@@ -179,34 +179,124 @@ enum ChartRange: String, CaseIterable, Identifiable, Hashable {
         }
     }
 
-    var grouping: String {
-        switch self {
-        case .fiveMin: return "TEN_SECONDS"
-        case .fifteenMin: return "ONE_MINUTE"
-        case .oneHour: return "FIVE_MINUTES"
-        case .sixHours: return "HALF_HOURLY"
-        case .twentyFourHours: return "HALF_HOURLY"
+    /// Which local history this range is drawn from.
+    var history: HistoryKind {
+        self == .twentyFourHours ? .minute : .fine
+    }
+}
+
+// MARK: - Telemetry History
+//
+// A rolling local copy of fine-grained telemetry. Charts are drawn from it,
+// and only the gaps are fetched, so zooming out keeps full detail without
+// spending more of Octopus's per-hour call allowance.
+
+enum HistoryKind: String, Codable {
+    /// 10-second readings for the last 6 hours (fed by the live poll for free).
+    case fine
+    /// 1-minute readings for the last 24 hours (10-second data for a whole
+    /// day is more than Kraken will return in one request).
+    case minute
+
+    var grouping: String { self == .fine ? "TEN_SECONDS" : "ONE_MINUTE" }
+    var bucket: TimeInterval { self == .fine ? 10 : 60 }
+    var retention: TimeInterval { (self == .fine ? 6 : 24) * 3600 + 600 }
+    /// How out of date the newest data may be before topping it up. The live
+    /// poll keeps `.fine` current on its own while the app is open.
+    var freshness: TimeInterval { self == .fine ? 90 : 10 * 60 }
+}
+
+struct ChartPoint {
+    let date: Date
+    let watts: Double
+}
+
+struct ChartSeries {
+    let points: [ChartPoint]
+    let start: Date
+    let end: Date
+    /// Bucket length, in seconds; consecutive points further apart than a few
+    /// buckets are a gap in the data and drawn as a break in the line.
+    let bucket: TimeInterval
+}
+
+struct TelemetryHistory: Codable {
+    let kind: HistoryKind
+    private var readings: [Date: TelemetryReading] = [:]
+    /// Time spans known to be fully fetched, sorted and non-overlapping.
+    private var covered: [ClosedRange<Date>] = []
+
+    init(kind: HistoryKind) {
+        self.kind = kind
+    }
+
+    mutating func merge(_ new: [TelemetryReading], from start: Date, to end: Date) {
+        for reading in new {
+            if let date = parseReadAt(reading.readAt) { readings[date] = reading }
+        }
+        // Union the new span into the covered spans, joining any that touch.
+        let slack = kind.bucket * 3
+        var span = start...max(start, end)
+        var kept: [ClosedRange<Date>] = []
+        for range in covered {
+            if range.upperBound.addingTimeInterval(slack) < span.lowerBound
+                || range.lowerBound.addingTimeInterval(-slack) > span.upperBound {
+                kept.append(range)
+            } else {
+                span = min(range.lowerBound, span.lowerBound)...max(range.upperBound, span.upperBound)
+            }
+        }
+        covered = (kept + [span]).sorted { $0.lowerBound < $1.lowerBound }
+        prune(now: max(end, Date()))
+    }
+
+    private mutating func prune(now: Date) {
+        let cutoff = now.addingTimeInterval(-kind.retention)
+        readings = readings.filter { $0.key >= cutoff }
+        covered = covered.compactMap { range in
+            range.upperBound < cutoff ? nil : max(range.lowerBound, cutoff)...range.upperBound
         }
     }
 
-    /// How stale a cached copy of this range may be before refetching.
-    var maxCacheAge: TimeInterval {
-        switch self {
-        case .fiveMin: return 0
-        case .fifteenMin, .oneHour: return 5 * 60
-        case .sixHours, .twentyFourHours: return 15 * 60
+    /// The single span to fetch so that `start...now` is fully covered, or nil
+    /// if the history already has it. Multiple holes are fetched as one request
+    /// spanning them all — Octopus limits calls, not data size.
+    func missingSpan(start: Date, now: Date) -> (from: Date, to: Date)? {
+        let needUntil = now.addingTimeInterval(-kind.freshness)
+        var cursor = start
+        var firstGap: Date?
+        var lastGapEnd: Date?
+        for range in covered where range.upperBound > cursor {
+            if range.lowerBound > cursor.addingTimeInterval(kind.bucket) {
+                firstGap = firstGap ?? cursor
+                lastGapEnd = range.lowerBound
+            }
+            cursor = max(cursor, range.upperBound)
+            if cursor >= needUntil { break }
         }
+        if cursor < needUntil {
+            firstGap = firstGap ?? cursor
+            lastGapEnd = now
+        }
+        guard let from = firstGap, let to = lastGapEnd else { return nil }
+        return (max(start, from.addingTimeInterval(-kind.bucket)), min(now, to.addingTimeInterval(kind.bucket)))
     }
 
-    /// Length of one bucket for `grouping`, in seconds.
-    var intervalSeconds: TimeInterval {
-        switch self {
-        case .fiveMin: return 10
-        case .fifteenMin: return 60
-        case .oneHour: return 5 * 60
-        case .sixHours, .twentyFourHours: return 30 * 60
-        }
+    func series(start: Date, end: Date) -> ChartSeries {
+        let points = readings
+            .filter { $0.key >= start && $0.key <= end }
+            .sorted { $0.key < $1.key }
+            .compactMap { date, reading in
+                reading.chartWatts(intervalSeconds: kind.bucket).map { ChartPoint(date: date, watts: $0) }
+            }
+        return ChartSeries(points: points, start: start, end: end, bucket: kind.bucket)
     }
+}
+
+private let readAtFormatter = ISO8601DateFormatter()
+
+func parseReadAt(_ string: String) -> Date? {
+    readAtFormatter.date(from: string)
 }
 
 // MARK: - Live Data
