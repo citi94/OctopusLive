@@ -466,7 +466,7 @@ struct DemandChart: View {
 
         var segments: [[CGPoint]] = []
         var current: [CGPoint] = []
-        var column = -1
+        var column: Int?
         var low: ChartPoint?
         var high: ChartPoint?
         var previous: Date?
@@ -479,23 +479,25 @@ struct DemandChart: View {
             }
         }
 
-        for point in series.points {
+        // Readings can sit a moment outside the window (Kraken's bucket
+        // boundaries vs. our fetch time); they'd plot off the edge anyway.
+        for point in series.points where point.date >= series.start && point.date <= series.end {
             if let previous, point.date.timeIntervalSince(previous) > gap {
                 flush(); low = nil; high = nil
                 if !current.isEmpty { segments.append(current) }
                 current = []
-                column = -1
+                column = nil
             }
             previous = point.date
             let col = Int(x(point.date).rounded(.down))
-            if col != column {
+            if col == column, let lo = low, let hi = high {
+                if point.watts < lo.watts { low = point }
+                if point.watts > hi.watts { high = point }
+            } else {
                 flush()
                 column = col
                 low = point
                 high = point
-            } else {
-                if point.watts < low!.watts { low = point }
-                if point.watts > high!.watts { high = point }
             }
         }
         flush()
